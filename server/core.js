@@ -94,31 +94,29 @@ export function audit(ctx, action, entity, entityId, details, scope) {
   } catch (e) { console.error('audit falhou', e.message); }
 }
 
-// ---------- eventos (SSE) ----------
-const clients = new Map(); // userId -> Set<res>
-export function addClient(userId, res) {
-  if (!clients.has(userId)) clients.set(userId, new Set());
-  clients.get(userId).add(res);
+// ---------- eventos (polling: tabela events) ----------
+export async function emit(userIds, type, data = {}) {
+  const ids = [...new Set(userIds)];
+  if (!ids.length) return;
+  try {
+    const json = JSON.stringify(data);
+    const ph = ids.map(() => '(?,?,?)').join(',');
+    await q.run(`INSERT INTO events(user_id,type,data) VALUES ${ph}`, ...ids.flatMap((id) => [id, type, json]));
+  } catch (e) { console.error('emit falhou', e.message); }
 }
-export function removeClient(userId, res) {
-  const s = clients.get(userId); if (!s) return;
-  s.delete(res); if (!s.size) clients.delete(userId);
+export async function pollEvents(userId, after) {
+  const last = (await q.get('SELECT COALESCE(MAX(id),0) AS m FROM events WHERE user_id=?', userId)).m;
+  if (!after || after > last) return { events: [], last };
+  const rows = await q.all('SELECT id,type,data FROM events WHERE user_id=? AND id>? ORDER BY id LIMIT 100', userId, after);
+  const events = rows.map((r) => ({ id: r.id, type: r.type, data: r.data ? JSON.parse(r.data) : {} }));
+  return { events, last: events.length ? events[events.length - 1].id : after };
 }
-export function emit(userIds, type, data = {}) {
-  const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const id of new Set(userIds)) {
-    for (const res of clients.get(id) || []) { try { res.write(payload); } catch { /* conexão caiu */ } }
-  }
-}
-export function heartbeat() {
-  for (const set of clients.values()) for (const res of set) { try { res.write(': ping\n\n'); } catch {} }
-}
-setInterval(heartbeat, 25_000).unref();
+export async function eventsCleanup() { await q.run("DELETE FROM events WHERE created_at < to_char((now() - interval '1 day') at time zone 'utc','YYYY-MM-DD HH24:MI:SS')"); }
 
 // Avisa os dispositivos relevantes que dados mudaram.
-export function emitChange(ctx, scope, what = 'data') {
-  const ids = scope === 'couple' ? coupleMemberIds(ctx.coupleId) : [ctx.userId];
-  emit(ids, 'change', { scope, what, by: ctx.userId });
+export async function emitChange(ctx, scope, what = 'data') {
+  const ids = scope === 'couple' ? await coupleMemberIds(ctx.coupleId) : [ctx.userId];
+  await emit(ids, 'change', { scope, what, by: ctx.userId });
 }
 
 // ---------- notificações ----------

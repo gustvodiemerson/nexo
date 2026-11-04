@@ -1,5 +1,6 @@
 // Utilidades HTTP, validação e erros — sem dependências externas.
 import crypto from 'node:crypto';
+import { q } from './db.js';
 
 export class HttpError extends Error {
   constructor(status, message, field) { super(message); this.status = status; this.field = field; }
@@ -104,17 +105,21 @@ export function parseCookies(header = '') {
   return out;
 }
 
-// ---------- rate limit em memória ----------
-const buckets = new Map();
-export function rateLimit(key, max, windowMs) {
+// ---------- rate limit (tabela rate_limits: vale entre instâncias serverless) ----------
+export async function rateLimit(key, max, windowMs) {
   const now = Date.now();
-  const b = buckets.get(key) || { n: 0, reset: now + windowMs };
-  if (now > b.reset) { b.n = 0; b.reset = now + windowMs; }
-  b.n++; buckets.set(key, b);
-  if (b.n > max) throw new HttpError(429, 'Muitas tentativas. Aguarde alguns minutos e tente novamente.');
+  const r = await q.get(
+    `INSERT INTO rate_limits(key,n,reset_at) VALUES (?,1,?)
+     ON CONFLICT(key) DO UPDATE SET
+       n = CASE WHEN rate_limits.reset_at < ? THEN 1 ELSE rate_limits.n + 1 END,
+       reset_at = CASE WHEN rate_limits.reset_at < ? THEN ? ELSE rate_limits.reset_at END
+     RETURNING n`,
+    key, now + windowMs, now, now, now + windowMs,
+  );
+  if (r.n > max) throw new HttpError(429, 'Muitas tentativas. Aguarde alguns minutos e tente novamente.');
 }
-export function rateReset(key) { buckets.delete(key); }
-setInterval(() => { const now = Date.now(); for (const [k, b] of buckets) if (now > b.reset) buckets.delete(k); }, 60_000).unref();
+export async function rateReset(key) { await q.run('DELETE FROM rate_limits WHERE key=?', key); }
+export async function rateCleanup() { await q.run('DELETE FROM rate_limits WHERE reset_at<?', Date.now()); }
 
 // ---------- senha ----------
 export function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {

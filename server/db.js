@@ -1,328 +1,140 @@
-// Banco SQLite (node:sqlite) com migrações versionadas.
-import { DatabaseSync } from 'node:sqlite';
-import fs from 'node:fs';
+// Banco PostgreSQL. Produção: Supabase via DATABASE_URL (pg). Local/testes: PGlite (Postgres embutido, sem instalar nada).
+// API: q.get / q.all / q.run (async) e tx(async fn) com transações reentrantes (SAVEPOINT).
 import path from 'node:path';
+import fs from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { SCHEMA } from './schema.js';
 
-const DATA_DIR = process.env.DATA_DIR || path.resolve(process.cwd(), 'data');
-fs.mkdirSync(DATA_DIR, { recursive: true });
-export const DB_PATH = process.env.DB_PATH || path.join(DATA_DIR, 'nexo.db');
+const NOW_SQL = `to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS')`;
+const NO_ID_TABLES = new Set(['couple_members', 'chat_reads', 'rate_limits', 'schema_migrations']);
 
-export const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA synchronous = NORMAL;');
-
-const MIGRATIONS = [
-  // 1 — núcleo
-  `
-  CREATE TABLE users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    email TEXT NOT NULL UNIQUE,
-    name TEXT NOT NULL,
-    password_hash TEXT NOT NULL,
-    avatar TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_login_at TEXT
-  );
-  CREATE TABLE sessions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token_hash TEXT NOT NULL UNIQUE,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    user_agent TEXT,
-    ip TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
-    expires_at TEXT NOT NULL
-  );
-  CREATE INDEX idx_sessions_user ON sessions(user_id);
-  CREATE TABLE password_resets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    token_hash TEXT NOT NULL UNIQUE,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    expires_at TEXT NOT NULL,
-    used_at TEXT
-  );
-
-  CREATE TABLE couples (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    cover TEXT,
-    created_by INTEGER NOT NULL REFERENCES users(id),
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE TABLE couple_members (
-    couple_id INTEGER NOT NULL REFERENCES couples(id) ON DELETE CASCADE,
-    user_id INTEGER NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
-    role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner','member')),
-    can_edit INTEGER NOT NULL DEFAULT 1,
-    share_personal_total INTEGER NOT NULL DEFAULT 0,
-    joined_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (couple_id, user_id)
-  );
-  CREATE TABLE invites (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    couple_id INTEGER NOT NULL REFERENCES couples(id) ON DELETE CASCADE,
-    code TEXT NOT NULL UNIQUE,
-    created_by INTEGER NOT NULL REFERENCES users(id),
-    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','revoked','expired')),
-    expires_at TEXT NOT NULL,
-    accepted_by INTEGER REFERENCES users(id),
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_invites_couple ON invites(couple_id);
-
-  CREATE TABLE accounts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope TEXT NOT NULL CHECK (scope IN ('personal','couple')),
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    couple_id INTEGER REFERENCES couples(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    type TEXT NOT NULL CHECK (type IN ('checking','wallet','savings','card')),
-    initial_cents INTEGER NOT NULL DEFAULT 0,
-    credit_limit_cents INTEGER,
-    closing_day INTEGER,
-    due_day INTEGER,
-    color TEXT,
-    archived INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_accounts_scope ON accounts(scope, user_id, couple_id);
-
-  CREATE TABLE categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope TEXT NOT NULL CHECK (scope IN ('personal','couple')),
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    couple_id INTEGER REFERENCES couples(id) ON DELETE CASCADE,
-    parent_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL CHECK (kind IN ('income','expense')),
-    icon TEXT,
-    color TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_categories_scope ON categories(scope, user_id, couple_id);
-
-  CREATE TABLE recurring (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope TEXT NOT NULL CHECK (scope IN ('personal','couple')),
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    couple_id INTEGER REFERENCES couples(id) ON DELETE CASCADE,
-    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
-    type TEXT NOT NULL CHECK (type IN ('income','expense')),
-    amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
-    description TEXT NOT NULL,
-    frequency TEXT NOT NULL CHECK (frequency IN ('weekly','monthly','yearly')),
-    next_date TEXT NOT NULL,
-    end_date TEXT,
-    auto_paid INTEGER NOT NULL DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope TEXT NOT NULL CHECK (scope IN ('personal','couple')),
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    couple_id INTEGER REFERENCES couples(id) ON DELETE CASCADE,
-    account_id INTEGER NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    to_account_id INTEGER REFERENCES accounts(id) ON DELETE CASCADE,
-    type TEXT NOT NULL CHECK (type IN ('income','expense','transfer')),
-    amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
-    date TEXT NOT NULL,
-    due_date TEXT,
-    status TEXT NOT NULL DEFAULT 'paid' CHECK (status IN ('paid','pending')),
-    category_id INTEGER REFERENCES categories(id) ON DELETE SET NULL,
-    description TEXT NOT NULL,
-    notes TEXT,
-    recurring_id INTEGER REFERENCES recurring(id) ON DELETE SET NULL,
-    installment_group TEXT,
-    installment_no INTEGER,
-    installment_total INTEGER,
-    idempotency_key TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_tx_scope_date ON transactions(scope, user_id, couple_id, date);
-  CREATE INDEX idx_tx_account ON transactions(account_id, date);
-  CREATE INDEX idx_tx_to_account ON transactions(to_account_id);
-  CREATE INDEX idx_tx_category ON transactions(category_id);
-  CREATE INDEX idx_tx_status ON transactions(status, due_date);
-  CREATE UNIQUE INDEX uq_tx_idem ON transactions(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
-  CREATE UNIQUE INDEX uq_tx_recurring ON transactions(recurring_id, date) WHERE recurring_id IS NOT NULL;
-
-  CREATE TABLE budgets (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope TEXT NOT NULL CHECK (scope IN ('personal','couple')),
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    couple_id INTEGER REFERENCES couples(id) ON DELETE CASCADE,
-    category_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
-    limit_cents INTEGER NOT NULL CHECK (limit_cents > 0),
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE UNIQUE INDEX uq_budget_personal ON budgets(user_id, IFNULL(category_id,0)) WHERE scope='personal';
-  CREATE UNIQUE INDEX uq_budget_couple ON budgets(couple_id, IFNULL(category_id,0)) WHERE scope='couple';
-
-  CREATE TABLE vaults (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope TEXT NOT NULL CHECK (scope IN ('personal','couple')),
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    couple_id INTEGER REFERENCES couples(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    target_cents INTEGER,
-    deadline TEXT,
-    color TEXT,
-    archived INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE TABLE vault_movements (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    vault_id INTEGER NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
-    user_id INTEGER NOT NULL REFERENCES users(id),
-    account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
-    type TEXT NOT NULL CHECK (type IN ('deposit','withdraw')),
-    amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
-    date TEXT NOT NULL,
-    note TEXT,
-    idempotency_key TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_vm_vault ON vault_movements(vault_id, date);
-  CREATE UNIQUE INDEX uq_vm_idem ON vault_movements(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
-
-  CREATE TABLE goals (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope TEXT NOT NULL CHECK (scope IN ('personal','couple')),
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    couple_id INTEGER REFERENCES couples(id) ON DELETE CASCADE,
-    vault_id INTEGER REFERENCES vaults(id) ON DELETE SET NULL,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL DEFAULT 'outro' CHECK (kind IN ('viagem','compra','patrimonio','projeto','reserva','outro')),
-    target_cents INTEGER NOT NULL CHECK (target_cents > 0),
-    deadline TEXT,
-    notes TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-
-  CREATE TABLE investments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    scope TEXT NOT NULL CHECK (scope IN ('personal','couple')),
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    couple_id INTEGER REFERENCES couples(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    asset_type TEXT NOT NULL DEFAULT 'outro' CHECK (asset_type IN ('renda_fixa','acoes','fiis','fundos','cripto','previdencia','outro')),
-    institution TEXT,
-    status TEXT NOT NULL DEFAULT 'realized' CHECK (status IN ('realized','planned')),
-    planned_cents INTEGER,
-    expected_return_pct REAL,
-    target_date TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE TABLE investment_entries (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    investment_id INTEGER NOT NULL REFERENCES investments(id) ON DELETE CASCADE,
-    user_id INTEGER NOT NULL REFERENCES users(id),
-    account_id INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
-    type TEXT NOT NULL CHECK (type IN ('aporte','resgate','valuation')),
-    amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
-    date TEXT NOT NULL,
-    note TEXT,
-    idempotency_key TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_ie_inv ON investment_entries(investment_id, date);
-  CREATE UNIQUE INDEX uq_ie_idem ON investment_entries(user_id, idempotency_key) WHERE idempotency_key IS NOT NULL;
-
-  CREATE TABLE chat_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    couple_id INTEGER NOT NULL REFERENCES couples(id) ON DELETE CASCADE,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    body TEXT NOT NULL,
-    attachment TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_chat_couple ON chat_messages(couple_id, id);
-  CREATE TABLE chat_reads (
-    couple_id INTEGER NOT NULL REFERENCES couples(id) ON DELETE CASCADE,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    last_read_id INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (couple_id, user_id)
-  );
-
-  CREATE TABLE notifications (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    type TEXT NOT NULL,
-    title TEXT NOT NULL,
-    body TEXT,
-    link TEXT,
-    dedupe_key TEXT,
-    read_at TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_notif_user ON notifications(user_id, read_at, id);
-  CREATE UNIQUE INDEX uq_notif_dedupe ON notifications(user_id, dedupe_key) WHERE dedupe_key IS NOT NULL;
-
-  CREATE TABLE ai_messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    scope TEXT NOT NULL,
-    role TEXT NOT NULL CHECK (role IN ('user','assistant')),
-    content TEXT NOT NULL,
-    provider TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_ai_user ON ai_messages(user_id, scope, id);
-
-  CREATE TABLE audit_log (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER,
-    couple_id INTEGER,
-    scope TEXT,
-    action TEXT NOT NULL,
-    entity TEXT,
-    entity_id INTEGER,
-    details TEXT,
-    ip TEXT,
-    created_at TEXT NOT NULL DEFAULT (datetime('now'))
-  );
-  CREATE INDEX idx_audit_user ON audit_log(user_id, id);
-  CREATE INDEX idx_audit_couple ON audit_log(couple_id, id);
-  `,
-];
-
-function migrate() {
-  db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime(\'now\')))');
-  const current = db.prepare('SELECT IFNULL(MAX(version),0) AS v FROM schema_migrations').get().v;
-  for (let i = current; i < MIGRATIONS.length; i++) {
-    db.exec('BEGIN');
-    try {
-      db.exec(MIGRATIONS[i]);
-      db.prepare('INSERT INTO schema_migrations(version) VALUES (?)').run(i + 1);
-      db.exec('COMMIT');
-    } catch (e) { db.exec('ROLLBACK'); throw e; }
+// ---- tradução de dialeto (o código das rotas foi escrito em SQL "estilo SQLite") ----
+function prep(sql, { forRun = false } = {}) {
+  let out = '', n = 0, i = 0;
+  while (i < sql.length) {
+    const c = sql[i];
+    if (c === "'") { // literal de texto
+      let j = i + 1;
+      while (j < sql.length) { if (sql[j] === "'" && sql[j + 1] === "'") j += 2; else if (sql[j] === "'") break; else j++; }
+      out += sql.slice(i, j + 1); i = j + 1; continue;
+    }
+    if (c === '?') { out += '$' + (++n); i++; continue; }
+    out += c; i++;
   }
+  out = out.replace(/datetime\('now'\)/gi, NOW_SQL).replace(/\bIFNULL\(/gi, 'COALESCE(');
+  if (/^\s*INSERT\s+OR\s+IGNORE\s+INTO/i.test(out)) {
+    out = out.replace(/^\s*INSERT\s+OR\s+IGNORE\s+INTO/i, 'INSERT INTO').replace(/;?\s*$/, ' ON CONFLICT DO NOTHING');
+  }
+  if (forRun) {
+    const m = /^\s*INSERT\s+INTO\s+(\w+)/i.exec(out);
+    if (m && !/\bRETURNING\b/i.test(out) && !NO_ID_TABLES.has(m[1].toLowerCase())) out = out.replace(/;?\s*$/, ' RETURNING id');
+  }
+  return out;
 }
-migrate();
 
+// ---- drivers ----
+const mutex = (() => { let p = Promise.resolve(); return () => { let release; const next = new Promise((r) => (release = r)); const prev = p; p = prev.then(() => next); return prev.then(() => release); }; })();
+
+async function makePg(url) {
+  const { default: pg } = await import('pg');
+  pg.types.setTypeParser(20, Number);
+  pg.types.setTypeParser(1700, Number);
+  const ssl = process.env.DATABASE_SSL === '0' ? false : { rejectUnauthorized: false };
+  const pool = new pg.Pool({ connectionString: url, max: Number(process.env.PG_POOL_MAX) || 1, ssl, idleTimeoutMillis: 10_000, connectionTimeoutMillis: 8_000 });
+  pool.on('error', (e) => console.error('[pg pool]', e.message));
+  const wrap = (r) => ({ rows: r.rows, count: r.rowCount });
+  return {
+    name: 'pg',
+    query: async (sql, params) => wrap(await pool.query(sql, params)),
+    exec: async (sql) => { await pool.query(sql); },
+    async acquire() {
+      const c = await pool.connect();
+      return { query: async (sql, params) => wrap(await c.query(sql, params)), release: () => c.release() };
+    },
+    async migrateLock(fn) {
+      const c = await pool.connect();
+      try { await c.query('SELECT pg_advisory_lock(727274)'); return await fn(async (s) => { const r = await c.query(s); return Array.isArray(r) ? r[r.length - 1] : r; }); }
+      finally { try { await c.query('SELECT pg_advisory_unlock(727274)'); } catch {} c.release(); }
+    },
+    close: () => pool.end(),
+  };
+}
+
+async function makePglite() {
+  const spec = '@electric-sql/pglite'; // especificador dinâmico: o bundler da Netlify não embute o PGlite
+  const { PGlite } = await import(spec);
+  const dir = process.env.PGLITE_DIR || path.join(process.env.DATA_DIR || path.resolve(process.cwd(), 'data'), 'pglite');
+  const mem = process.env.PGLITE_DIR === 'memory';
+  if (!mem) fs.mkdirSync(path.dirname(dir), { recursive: true });
+  const db = new PGlite(mem ? undefined : dir);
+  const opts = { parsers: { 20: (v) => Number(v), 1700: (v) => Number(v) } };
+  await db.waitReady;
+  const wrap = (r) => ({ rows: r.rows, count: r.affectedRows ?? r.rows.length });
+  return {
+    name: 'pglite',
+    query: async (sql, params) => { const rel = await mutex(); try { return wrap(await db.query(sql, params, opts)); } finally { rel(); } },
+    exec: async (sql) => { const rel = await mutex(); try { await db.exec(sql); } finally { rel(); } },
+    async acquire() {
+      const rel = await mutex();
+      return { query: async (sql, params) => wrap(await db.query(sql, params, opts)), release: rel };
+    },
+    async migrateLock(fn) { const rel = await mutex(); try { return await fn(async (s) => { const r = await db.exec(s); return r[r.length - 1] || { rows: [] }; }); } finally { rel(); } },
+    close: () => db.close(),
+  };
+}
+
+// ---- inicialização + migração automática ----
+let driverP = null;
+export function getDriver() {
+  if (!driverP) {
+    driverP = (async () => {
+      const d = process.env.DATABASE_URL ? await makePg(process.env.DATABASE_URL) : await makePglite();
+      await d.migrateLock(async (run) => {
+        await run(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (${NOW_SQL}))`);
+        const current = Number((await run('SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations')).rows[0].v);
+        if (current < 1) {
+          await run('BEGIN');
+          try { await run(SCHEMA); await run("INSERT INTO schema_migrations(version) VALUES (1)"); await run('COMMIT'); }
+          catch (e) { try { await run('ROLLBACK'); } catch {} throw e; }
+        }
+      });
+      return d;
+    })();
+    driverP.catch(() => { driverP = null; });
+  }
+  return driverP;
+}
+
+// ---- API ----
+const als = new AsyncLocalStorage();
+async function exec(sql, params, forRun) {
+  const text = prep(sql, { forRun });
+  const store = als.getStore();
+  if (store) return store.client.query(text, params);
+  return (await getDriver()).query(text, params);
+}
 export const q = {
-  get: (sql, ...p) => db.prepare(sql).get(...p),
-  all: (sql, ...p) => db.prepare(sql).all(...p),
-  run: (sql, ...p) => db.prepare(sql).run(...p),
+  get: async (sql, ...p) => (await exec(sql, p, false)).rows[0],
+  all: async (sql, ...p) => (await exec(sql, p, false)).rows,
+  run: async (sql, ...p) => { const r = await exec(sql, p, true); return { changes: r.count, lastInsertRowid: r.rows[0]?.id }; },
 };
 
-let depth = 0;
-// Transação reentrante: a mais externa usa BEGIN IMMEDIATE; as internas usam SAVEPOINT.
-export function tx(fn) {
-  const outer = depth === 0, sp = `sp${depth}`;
-  db.exec(outer ? 'BEGIN IMMEDIATE' : `SAVEPOINT ${sp}`);
-  depth++;
-  try {
-    const r = fn();
-    depth--;
-    db.exec(outer ? 'COMMIT' : `RELEASE ${sp}`);
-    return r;
-  } catch (e) {
-    depth--;
-    try { db.exec(outer ? 'ROLLBACK' : `ROLLBACK TO ${sp}; RELEASE ${sp}`); } catch {}
-    throw e;
+// Transação reentrante: a mais externa usa BEGIN; as internas, SAVEPOINT. O cliente viaja em AsyncLocalStorage.
+export async function tx(fn) {
+  const cur = als.getStore();
+  if (cur) {
+    const sp = `sp${++cur.n}`;
+    await cur.client.query(`SAVEPOINT ${sp}`);
+    try { const r = await fn(); await cur.client.query(`RELEASE SAVEPOINT ${sp}`); return r; }
+    catch (e) { try { await cur.client.query(`ROLLBACK TO SAVEPOINT ${sp}`); await cur.client.query(`RELEASE SAVEPOINT ${sp}`); } catch {} throw e; }
   }
+  const client = await (await getDriver()).acquire();
+  const store = { client, n: 0 };
+  try {
+    await client.query('BEGIN');
+    try { const r = await als.run(store, fn); await client.query('COMMIT'); return r; }
+    catch (e) { try { await client.query('ROLLBACK'); } catch {} throw e; }
+  } finally { client.release(); }
 }
+
+export async function closeDb() { if (driverP) { try { await (await driverP).close(); } catch {} driverP = null; } }
