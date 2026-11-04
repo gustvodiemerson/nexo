@@ -164,7 +164,7 @@ CREATE TABLE vaults (
 CREATE TABLE vault_movements (
   id BIGSERIAL PRIMARY KEY,
   vault_id BIGINT NOT NULL REFERENCES vaults(id) ON DELETE CASCADE,
-  user_id BIGINT NOT NULL REFERENCES users(id),
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   account_id BIGINT REFERENCES accounts(id) ON DELETE SET NULL,
   type TEXT NOT NULL CHECK (type IN ('deposit','withdraw')),
   amount_cents BIGINT NOT NULL CHECK (amount_cents > 0),
@@ -207,7 +207,7 @@ CREATE TABLE investments (
 CREATE TABLE investment_entries (
   id BIGSERIAL PRIMARY KEY,
   investment_id BIGINT NOT NULL REFERENCES investments(id) ON DELETE CASCADE,
-  user_id BIGINT NOT NULL REFERENCES users(id),
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   account_id BIGINT REFERENCES accounts(id) ON DELETE SET NULL,
   type TEXT NOT NULL CHECK (type IN ('aporte','resgate','valuation')),
   amount_cents BIGINT NOT NULL CHECK (amount_cents >= 0),

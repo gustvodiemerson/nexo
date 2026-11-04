@@ -1,18 +1,42 @@
 # NEXO — Juntos, mais longe.
 
-Gestão financeira pessoal e em casal. Node ≥ 22.5, **sem dependências externas** (SQLite nativo, servidor HTTP próprio, frontend em JS puro / PWA).
+Gestão financeira pessoal e em casal. Frontend em JS puro (PWA), API em Node servida por **Netlify Functions**, banco **PostgreSQL (Supabase)**.
 
-## Rodar
+## Publicar na Netlify + Supabase (grátis)
+
+**1. Supabase (banco)**
+1. Em supabase.com crie um projeto (guarde a *senha do banco*).
+2. Vá em **Project Settings → Database → Connection string** e escolha **Transaction pooler** (porta **6543**). Copie a URL e troque `[YOUR-PASSWORD]` pela senha.
+3. Nada de SQL manual: o app cria as tabelas sozinho no primeiro acesso. (Se preferir, rode `db/schema.sql` no *SQL Editor* — só em banco vazio.)
+
+**2. Netlify (site + API)**
+1. *Add new site → Import an existing project* → escolha este repositório do GitHub. O `netlify.toml` já configura tudo (publica `public/`, API em `netlify/functions/`).
+2. Em **Site configuration → Environment variables** crie:
+   - `DATABASE_URL` = a URL do passo 1.2 (obrigatória)
+   - `APP_URL` = `https://SEU-SITE.netlify.app` (ou seu domínio)
+   - opcionais: `RESEND_API_KEY` + `MAIL_FROM` (e-mail de recuperação de senha), e uma chave de IA (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`…).
+3. **Deploy**. Abra o site e crie sua conta.
+
+A função agendada `jobs` roda a cada hora (lançamentos recorrentes, alertas de vencimento/metas e limpeza).
+
+### Limites do plano gratuito
+- **Supabase free** pausa o projeto após ~1 semana sem uso (basta clicar em *Restore*; os dados ficam).
+- **Netlify free**: 125 mil chamadas de função/mês e ~10 s por chamada. O app atualiza por *polling* (a cada 15 s; 3 s no chat) só com a aba aberta.
+- A resposta da IA externa tem limite de 8 s; se estourar, o assistente responde em modo local.
+
+## Rodar local
 ```bash
-npm start            # http://localhost:3000
-npm test             # 18 testes de API (auth, isolamento, saldos, cofre, investimentos, IA…)
+npm install
+npm start     # http://localhost:3000 — usa Postgres embutido (PGlite) em ./data/pglite
+npm test      # 18 testes de API (auth, isolamento, saldos, cofre, investimentos, IA…)
+TEST_DATABASE_URL=postgres://... DATABASE_SSL=0 npm test   # mesmos testes num Postgres de verdade
 ```
-O banco SQLite fica em `data/nexo.db` (`DATA_DIR` para mudar). Em produção use volume persistente e `NODE_ENV=production`, `TRUST_PROXY=1` atrás de HTTPS. Veja `.env.example`.
+Com `DATABASE_URL` definida, o servidor local usa esse Postgres.
 
-## O que depende de configuração
-- **IA externa**: defina ao menos uma chave (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `GROQ_API_KEY`, `OPENROUTER_API_KEY`). Sem chave, o assistente responde em *modo local* (cálculos sobre seus dados reais).
-- **E-mail de recuperação de senha**: `RESEND_API_KEY` + `MAIL_FROM`. Sem isso, em desenvolvimento o link aparece na própria tela.
-- **Instalação como app**: exige HTTPS (ou localhost). Android/Chrome oferece “Instalar”; no iPhone use Compartilhar → Adicionar à Tela de Início.
+## Segurança
+- Login/sessão próprios (cookie HttpOnly, hash scrypt); o Supabase é usado só como banco.
+- Todas as tabelas têm **RLS ligado e sem políticas**: a API pública do Supabase (chave `anon`) não lê nada. Não use a `anon key` neste projeto.
+- Isolamento pessoal/casal, auditoria, idempotência e limite de tentativas no servidor.
 
 ## Estrutura
-`server/` API + regras (isolamento por escopo pessoal/casal, auditoria, idempotência) · `public/` PWA (`js/app.js` roteador, `js/views/*` telas, `js/charts.js` gráficos SVG).
+`server/` regras e rotas (`handler.js` é o núcleo HTTP, `db.js` o acesso ao Postgres) · `netlify/functions/` `api.mjs` e `jobs.mjs` · `db/schema.sql` esquema · `public/` PWA.

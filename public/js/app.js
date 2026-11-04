@@ -36,7 +36,7 @@ const parseHash = () => { const raw = location.hash.replace(/^#/, '') || '/'; re
 function find(path) { for (const r of ROUTES) { const m = r.re.exec(path); if (m) return { route: r, params: Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])])) }; } return null; }
 
 const root = $('#root');
-let shell = null, token = 0, current = null, currentRoute = null, currentParams = null, es = null;
+let shell = null, token = 0, current = null, currentRoute = null, currentParams = null;
 
 // ---------- casca ----------
 const NAV = [
@@ -140,23 +140,40 @@ const refreshView = debounce(() => {
 for (const ev of ['change', 'scope', 'scope-refresh', 'hide']) bus.on(ev, refreshView);
 bus.on('change', () => { refreshCounters(); });
 
-// ---------- tempo real (SSE) ----------
-function connectEvents() {
-  if (es || typeof EventSource === 'undefined') return;
-  es = new EventSource('/api/events');
-  const j = (ev) => { try { return JSON.parse(ev.data); } catch { return {}; } };
-  es.addEventListener('change', async (ev) => { const d = j(ev); if (d.what === 'couple') { await refreshMe(); } bus.emit('change', d); });
-  es.addEventListener('notification', (ev) => {
-    const d = j(ev); refreshCounters();
+// ---------- atualização periódica (polling; a Netlify não mantém conexões abertas) ----------
+let pollTimer = null, cursor = null, polling = false;
+const jget = (d) => d || {};
+function dispatchEvent(ev) {
+  const d = jget(ev.data);
+  if (ev.type === 'change') { (async () => { if (d.what === 'couple') await refreshMe(); bus.emit('change', d); })(); }
+  else if (ev.type === 'notification') {
+    refreshCounters();
     if (d.type === 'chat' && currentRoute && currentRoute.p === '/chat') return;
     toast(d.title + (d.body ? ` — ${d.body}` : ''));
-  });
-  es.addEventListener('chat', (ev) => { bus.emit('chat', j(ev)); if (!(currentRoute && currentRoute.p === '/chat')) refreshCounters(); });
-  es.addEventListener('chat_read', (ev) => bus.emit('chat_read', j(ev)));
-  es.addEventListener('chat_delete', (ev) => bus.emit('chat_delete', j(ev)));
-  es.onerror = () => { /* o navegador reconecta sozinho; se a sessão expirou, o próximo fetch cuida */ };
+  }
+  else if (ev.type === 'chat') { bus.emit('chat', d); if (!(currentRoute && currentRoute.p === '/chat')) refreshCounters(); }
+  else if (ev.type === 'chat_read') bus.emit('chat_read', d);
+  else if (ev.type === 'chat_delete') bus.emit('chat_delete', d);
 }
-function disconnectEvents() { if (es) { es.close(); es = null; } }
+async function pollTick() {
+  pollTimer = null;
+  if (!S.me || !polling) return;
+  if (!document.hidden && navigator.onLine !== false) {
+    try {
+      const r = await GET('/events/poll' + (cursor === null ? '' : '?after=' + cursor));
+      if (cursor !== null) for (const ev of r.events) dispatchEvent(ev);
+      cursor = r.last;
+    } catch { /* sessão expirada é tratada pelo próximo fetch */ }
+  }
+  if (S.me && polling) schedulePoll();
+}
+function schedulePoll(ms) {
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(pollTick, ms ?? (currentRoute && currentRoute.p === '/chat' ? 3000 : 15000));
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && S.me && cursor !== null) schedulePoll(300); });
+function connectEvents() { if (!polling && S.me) { polling = true; cursor = null; schedulePoll(50); } }
+function disconnectEvents() { polling = false; clearTimeout(pollTimer); pollTimer = null; cursor = null; }
 
 // ---------- sessão ----------
 bus.on('session', () => {

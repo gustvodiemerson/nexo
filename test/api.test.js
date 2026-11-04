@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nexo-test-'));
 process.env.DATA_DIR = tmp;
+process.env.PGLITE_DIR = 'memory'; // Postgres embutido (PGlite) em memória
+if (!process.env.TEST_DATABASE_URL) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
 process.env.NODE_ENV = 'test';
 delete process.env.ANTHROPIC_API_KEY; delete process.env.OPENAI_API_KEY; delete process.env.GEMINI_API_KEY;
 
@@ -124,9 +126,9 @@ test('parcelamento, recorrência, conta a pagar e baixa', async () => {
   // recorrência: lançada hoje; ao simular passagem de tempo, gera os meses pendentes sem duplicar
   const r = await A.post('/api/transactions', { scope: 'personal', type: 'expense', account_id: ids.accA, amount_cents: 5000, date: today, description: 'Internet', recurrence: { frequency: 'monthly' } }); ok(r, 201);
   const rec = (await A.get('/api/recurring?scope=personal')).data.recurring; assert.equal(rec.length, 1);
-  q.run("UPDATE recurring SET next_date=date('now','-2 month') WHERE id=?", rec[0].id);
-  const n = materializeRecurring(today); assert.ok(n >= 2, 'deve gerar ocorrências atrasadas');
-  assert.equal(materializeRecurring(today), 0, 'não duplica');
+  await q.run("UPDATE recurring SET next_date=to_char(current_date - interval '2 month','YYYY-MM-DD') WHERE id=?", rec[0].id);
+  const n = await materializeRecurring(today); assert.ok(n >= 2, 'deve gerar ocorrências atrasadas');
+  assert.equal(await materializeRecurring(today), 0, 'não duplica');
   const bills = (await A.get('/api/bills?scope=personal')).data; assert.ok(bills.overdue.length >= 1);
 });
 
@@ -278,7 +280,7 @@ test('assistente de IA: modo local usa apenas dados reais e respeita escopo', as
   assert.equal((await A.get('/api/ai/history?scope=personal')).data.messages.length, 2);
   assert.equal((await C.get('/api/ai/history?scope=personal')).data.messages.length, 2);
   const { buildContext } = await import('../server/ai.js'); const { getCtx } = await import('../server/core.js');
-  const uB = q.get("SELECT * FROM users WHERE email='beto@teste.com'");
+  const uB = await q.get("SELECT * FROM users WHERE email='beto@teste.com'");
   const ctxB = JSON.stringify(buildContext(getCtx(uB, null), 'couple'));
   assert.ok(!ctxB.includes('Nubank') && !ctxB.includes('Salário')); // dados pessoais de A não vazam para o contexto de B
 });
@@ -287,14 +289,14 @@ test('perfil, sessões, auditoria e exclusão de conta preservando o casal', asy
   ok(await A.patch('/api/profile', { name: 'Ana Maria' }));
   const s = await A.get('/api/profile/sessions'); ok(s); assert.ok(s.data.sessions.some((x) => x.current));
   assert.equal((await A.post('/api/profile/password', { current: 'errada', password: 'novasenha123' })).status, 400);
-  const audit = q.all("SELECT action FROM audit_log WHERE action LIKE 'transaction.%'"); assert.ok(audit.length >= 5);
+  const audit = await q.all("SELECT action FROM audit_log WHERE action LIKE 'transaction.%'"); assert.ok(audit.length >= 5);
   assert.equal((await A.post('/api/profile/delete', { password: 'errada123' })).status, 400);
   ok(await A.post('/api/profile/delete', { password: 'senha1234' }));
   assert.equal((await A.get('/api/auth/me')).status, 401);
   const couple = (await B.get('/api/couple')).data.couple; assert.ok(couple); assert.equal(couple.members.length, 1); assert.equal(couple.role, 'owner');
   assert.equal((await B.get('/api/transactions?scope=couple')).data.count, 1); // dados do casal permanecem com o parceiro
   assert.equal((await B.get('/api/goals?scope=couple')).data.goals[0].current_cents, 200000);
-  assert.equal(q.get("SELECT COUNT(*) AS n FROM users WHERE email='ana@teste.com'").n, 0);
+  assert.equal((await q.get("SELECT COUNT(*) AS n FROM users WHERE email='ana@teste.com'")).n, 0);
 });
 
 test('estáticos: SPA, cabeçalhos de segurança e bloqueio de path traversal', async () => {

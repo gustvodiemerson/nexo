@@ -3,8 +3,8 @@ import { q, tx } from './db.js';
 import { bad, forbidden, notFound } from './lib.js';
 
 // ---------- contexto ----------
-export function getCtx(user, ip) {
-  const m = q.get('SELECT couple_id, role, can_edit, share_personal_total FROM couple_members WHERE user_id=?', user.id);
+export async function getCtx(user, ip) {
+  const m = await q.get('SELECT couple_id, role, can_edit, share_personal_total FROM couple_members WHERE user_id=?', user.id);
   return {
     user, userId: user.id, ip,
     coupleId: m ? m.couple_id : null,
@@ -58,11 +58,11 @@ export function writeTarget(ctx, scope) {
 }
 
 const TABLES = new Set(['accounts', 'categories', 'transactions', 'recurring', 'budgets', 'vaults', 'goals', 'investments']);
-export function getOwned(table, id, ctx, { write = false } = {}) {
+export async function getOwned(table, id, ctx, { write = false } = {}) {
   if (!TABLES.has(table)) throw new Error('tabela inválida');
   const n = Number(id);
   if (!Number.isInteger(n)) throw notFound();
-  const row = q.get(`SELECT * FROM ${table} WHERE id=?`, n);
+  const row = await q.get(`SELECT * FROM ${table} WHERE id=?`, n);
   // 404 (e não 403) para não revelar a existência de registros alheios.
   if (!row || !canRead(ctx, row)) throw notFound();
   if (write && !canWrite(ctx, row)) throw forbidden('Você tem acesso somente leitura aos dados do casal.');
@@ -70,23 +70,23 @@ export function getOwned(table, id, ctx, { write = false } = {}) {
 }
 
 // Conta acessível para o usuário (para uso em transações etc.).
-export function getAccountFor(ctx, id, { write = true } = {}) {
-  const row = q.get('SELECT * FROM accounts WHERE id=?', Number(id));
+export async function getAccountFor(ctx, id, { write = true } = {}) {
+  const row = await q.get('SELECT * FROM accounts WHERE id=?', Number(id));
   if (!row || !canRead(ctx, row)) throw bad('Conta inválida.', 'account_id');
   if (write && !canWrite(ctx, row)) throw forbidden('Você tem acesso somente leitura a esta conta.');
   if (row.archived) throw bad('Esta conta está arquivada.', 'account_id');
   return row;
 }
 
-export function coupleMemberIds(coupleId) {
+export async function coupleMemberIds(coupleId) {
   if (!coupleId) return [];
-  return q.all('SELECT user_id FROM couple_members WHERE couple_id=?', coupleId).map((r) => r.user_id);
+  return (await q.all('SELECT user_id FROM couple_members WHERE couple_id=?', coupleId)).map((r) => r.user_id);
 }
 
 // ---------- auditoria ----------
-export function audit(ctx, action, entity, entityId, details, scope) {
+export async function audit(ctx, action, entity, entityId, details, scope) {
   try {
-    q.run(
+    await q.run(
       'INSERT INTO audit_log(user_id,couple_id,scope,action,entity,entity_id,details,ip) VALUES (?,?,?,?,?,?,?,?)',
       ctx.userId ?? null, scope === 'couple' ? ctx.coupleId : null, scope || null, action, entity || null,
       entityId ?? null, details ? JSON.stringify(details) : null, ctx.ip || null,
@@ -106,7 +106,7 @@ export async function emit(userIds, type, data = {}) {
 }
 export async function pollEvents(userId, after) {
   const last = (await q.get('SELECT COALESCE(MAX(id),0) AS m FROM events WHERE user_id=?', userId)).m;
-  if (!after || after > last) return { events: [], last };
+  if (after === null || after > last) return { events: [], last };
   const rows = await q.all('SELECT id,type,data FROM events WHERE user_id=? AND id>? ORDER BY id LIMIT 100', userId, after);
   const events = rows.map((r) => ({ id: r.id, type: r.type, data: r.data ? JSON.parse(r.data) : {} }));
   return { events, last: events.length ? events[events.length - 1].id : after };
@@ -120,13 +120,13 @@ export async function emitChange(ctx, scope, what = 'data') {
 }
 
 // ---------- notificações ----------
-export function notify(userId, { type, title, body, link, dedupe }) {
+export async function notify(userId, { type, title, body, link, dedupe }) {
   try {
-    const r = q.run(
+    const r = await q.run(
       'INSERT OR IGNORE INTO notifications(user_id,type,title,body,link,dedupe_key) VALUES (?,?,?,?,?,?)',
       userId, type, title, body || null, link || null, dedupe || null,
     );
-    if (r.changes) emit([userId], 'notification', { type, title, body, link });
+    if (r.changes) await emit([userId], 'notification', { type, title, body, link });
   } catch (e) { console.error('notify falhou', e.message); }
 }
 
@@ -149,29 +149,29 @@ const DEFAULT_INCOME = [
   ['Salário', 'briefcase', '#3ddc97'], ['Freelas', 'laptop', '#4cc9f0'], ['Rendimentos', 'trend', '#ffd166'],
   ['Reembolsos', 'undo', '#9aa7ff'], ['Presentes recebidos', 'gift', '#ff8fb8'], ['Outras receitas', 'dots', '#8a93ad'],
 ];
-export function seedCategories(scope, userId, coupleId) {
-  const ins = (name, kind, icon, color, parent) =>
-    Number(q.run(
+export async function seedCategories(scope, userId, coupleId) {
+  const ins = async (name, kind, icon, color, parent) =>
+    Number((await q.run(
       'INSERT INTO categories(scope,user_id,couple_id,parent_id,name,kind,icon,color) VALUES (?,?,?,?,?,?,?,?)',
       scope, userId, coupleId, parent || null, name, kind, icon, color,
-    ).lastInsertRowid);
-  tx(() => {
+    )).lastInsertRowid);
+  await tx(async () => {
     for (const [name, icon, color, subs] of DEFAULT_EXPENSE) {
-      const id = ins(name, 'expense', icon, color);
-      for (const s of subs) ins(s, 'expense', icon, color, id);
+      const id = await ins(name, 'expense', icon, color);
+      for (const s of subs) await ins(s, 'expense', icon, color, id);
     }
-    for (const [name, icon, color] of DEFAULT_INCOME) ins(name, 'income', icon, color);
+    for (const [name, icon, color] of DEFAULT_INCOME) await ins(name, 'income', icon, color);
   });
 }
 
 // ---------- saldos ----------
 const MAX_DATE = '9999-12-31';
 // Saldo das contas (apenas lançamentos pagos) até a data informada.
-export function accountBalances(accountIds, asOf = MAX_DATE) {
+export async function accountBalances(accountIds, asOf = MAX_DATE) {
   const out = new Map();
   if (!accountIds.length) return out;
   const ph = accountIds.map(() => '?').join(',');
-  const rows = q.all(
+  const rows = await q.all(
     `SELECT a.id, a.initial_cents
       + IFNULL((SELECT SUM(CASE WHEN t.type='income' THEN t.amount_cents ELSE -t.amount_cents END)
                 FROM transactions t WHERE t.account_id=a.id AND t.status='paid' AND t.type IN ('income','expense') AND t.date<=?),0)
@@ -187,16 +187,16 @@ export function accountBalances(accountIds, asOf = MAX_DATE) {
   return out;
 }
 
-export function vaultBalance(vaultId, asOf = MAX_DATE) {
-  return q.get(
+export async function vaultBalance(vaultId, asOf = MAX_DATE) {
+  return (await q.get(
     `SELECT IFNULL(SUM(CASE WHEN type='deposit' THEN amount_cents ELSE -amount_cents END),0) AS b
      FROM vault_movements WHERE vault_id=? AND date<=?`, vaultId, asOf,
-  ).b;
+  )).b;
 }
 
 // Valor de um investimento: (último valuation + aportes líquidos depois) ou aportes líquidos.
-export function investmentSnapshot(invId, asOf = MAX_DATE) {
-  const entries = q.all('SELECT type, amount_cents, date, id FROM investment_entries WHERE investment_id=? AND date<=? ORDER BY date, id', invId, asOf);
+export async function investmentSnapshot(invId, asOf = MAX_DATE) {
+  const entries = await q.all('SELECT type, amount_cents, date, id FROM investment_entries WHERE investment_id=? AND date<=? ORDER BY date, id', invId, asOf);
   let invested = 0, value = 0;
   for (const e of entries) {
     if (e.type === 'aporte') { invested += e.amount_cents; value += e.amount_cents; }

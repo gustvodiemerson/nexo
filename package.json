@@ -5,15 +5,18 @@
   "type": "module",
   "private": true,
   "engines": {
-    "node": ">=22.5"
+    "node": ">=20"
   },
   "scripts": {
-    "start": "node --disable-warning=ExperimentalWarning server/index.js",
-    "dev": "node --disable-warning=ExperimentalWarning --watch server/index.js",
-    "test": "node --disable-warning=ExperimentalWarning test/api.test.js"
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node test/api.test.js",
+    "schema": "node scripts/build-schema.mjs"
   },
   "dependencies": {
-    "@electric-sql/pglite": "^0.5.15",
     "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15"
   }
 }

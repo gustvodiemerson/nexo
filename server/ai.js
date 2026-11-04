@@ -14,7 +14,7 @@ import { todayISO, addMonths, monthStart, monthEnd } from './lib.js';
 import { brl, balanceSummary, sums, byCategory, monthlySeries, vaultsSummary, investmentsSummary, goalsWithProgress, budgetStatus, pendingBills, recentTransactions } from './calc.js';
 import { computeInsights } from './insights.js';
 
-const T = 45_000;
+const T = Number(process.env.AI_TIMEOUT_MS) || 8_000; // funções da Netlify têm limite de ~10s no plano gratuito
 const env = (k) => process.env[k] || '';
 
 const PROVIDERS = {
@@ -82,30 +82,30 @@ export function aiStatus() {
 }
 
 // ---------- contexto com dados autorizados ----------
-export function buildContext(ctx, scope, today = todayISO()) {
+export async function buildContext(ctx, scope, today = todayISO()) {
   const from = monthStart(today), to = monthEnd(today), pFrom = monthStart(addMonths(today, -1)), pTo = monthEnd(addMonths(today, -1));
-  const bal = balanceSummary(ctx, scope);
-  const names = new Map(q.all('SELECT id, name FROM users WHERE id IN (SELECT user_id FROM couple_members WHERE couple_id=? UNION SELECT ?)', ctx.coupleId ?? 0, ctx.userId).map((u) => [u.id, u.name]));
+  const bal = await balanceSummary(ctx, scope);
+  const names = new Map((await q.all('SELECT id, name FROM users WHERE id IN (SELECT user_id FROM couple_members WHERE couple_id=? UNION SELECT ?)', ctx.coupleId ?? 0, ctx.userId)).map((u) => [u.id, u.name]));
   const label = (s) => (s === 'couple' ? 'casal' : 'pessoal');
-  const goals = goalsWithProgress(ctx, scope, today);
-  const inv = investmentsSummary(ctx, scope);
-  const vlt = vaultsSummary(ctx, scope);
+  const goals = await goalsWithProgress(ctx, scope, today);
+  const inv = await investmentsSummary(ctx, scope);
+  const vlt = await vaultsSummary(ctx, scope);
   return {
     hoje: today, ambiente_consultado: scope === 'all' ? 'pessoal + casal (cada item identificado)' : label(scope), usuario: ctx.user.name,
     parceiro: ctx.coupleId ? [...names.values()].filter((n) => n !== ctx.user.name) : null,
     contas: bal.accounts.map((a) => ({ nome: a.name, tipo: a.type, ambiente: label(a.scope), saldo: brl(a.balance_cents) })),
     saldo_total_sem_cartoes: brl(bal.total_cents), faturas_abertas_cartoes: brl(bal.card_debt_cents),
-    mes_atual: { receitas: brl(sums(ctx, scope, from, to).income), despesas: brl(sums(ctx, scope, from, to).expense), gastos_por_categoria: byCategory(ctx, scope, from, to).slice(0, 10).map((c) => ({ categoria: c.name, total: brl(c.total) })) },
-    mes_anterior: { receitas: brl(sums(ctx, scope, pFrom, pTo).income), despesas: brl(sums(ctx, scope, pFrom, pTo).expense), gastos_por_categoria: byCategory(ctx, scope, pFrom, pTo).slice(0, 10).map((c) => ({ categoria: c.name, total: brl(c.total) })) },
-    ultimos_6_meses: monthlySeries(ctx, scope, today, 6).map((m) => ({ mes: m.month, receitas: brl(m.income), despesas: brl(m.expense) })),
-    orcamentos: budgetStatus(ctx, scope, today).map((b) => ({ categoria: b.category_name, limite: brl(b.limit_cents), gasto: brl(b.spent_cents), ambiente: label(b.scope) })),
+    mes_atual: { receitas: brl((await sums(ctx, scope, from, to)).income), despesas: brl((await sums(ctx, scope, from, to)).expense), gastos_por_categoria: (await byCategory(ctx, scope, from, to)).slice(0, 10).map((c) => ({ categoria: c.name, total: brl(c.total) })) },
+    mes_anterior: { receitas: brl((await sums(ctx, scope, pFrom, pTo)).income), despesas: brl((await sums(ctx, scope, pFrom, pTo)).expense), gastos_por_categoria: (await byCategory(ctx, scope, pFrom, pTo)).slice(0, 10).map((c) => ({ categoria: c.name, total: brl(c.total) })) },
+    ultimos_6_meses: (await monthlySeries(ctx, scope, today, 6)).map((m) => ({ mes: m.month, receitas: brl(m.income), despesas: brl(m.expense) })),
+    orcamentos: (await budgetStatus(ctx, scope, today)).map((b) => ({ categoria: b.category_name, limite: brl(b.limit_cents), gasto: brl(b.spent_cents), ambiente: label(b.scope) })),
     cofres: vlt.items.map((c) => ({ nome: c.name, ambiente: label(c.scope), saldo: brl(c.balance_cents), objetivo: c.target_cents ? brl(c.target_cents) : null })),
     metas: goals.map((g) => ({ nome: g.name, ambiente: label(g.scope), atual: brl(g.current_cents), alvo: brl(g.target_cents), prazo: g.deadline, necessario_por_mes: g.per_month_cents ? brl(g.per_month_cents) : null })),
     investimentos: { investido: brl(inv.invested_cents), valor_atual: brl(inv.value_cents), apenas_planejado: brl(inv.planned_cents),
       itens: inv.items.map((i) => ({ nome: i.name, ambiente: label(i.scope), situacao: i.status === 'planned' ? 'planejado' : 'realizado', tipo: i.asset_type, valor_atual: brl(i.value_cents), planejado: i.planned_cents ? brl(i.planned_cents) : null })) },
-    contas_a_pagar: (() => { const b = pendingBills(ctx, scope, today, 30); return { vencidas: b.overdue.slice(0, 10).map((x) => ({ desc: x.description, valor: brl(x.amount_cents), data: x.date })), proximos_30_dias: b.upcoming.slice(0, 10).map((x) => ({ desc: x.description, valor: brl(x.amount_cents), data: x.date })) }; })(),
-    ultimas_movimentacoes: recentTransactions(ctx, scope, 25).map((t) => ({ data: t.date, descricao: t.description, tipo: t.type, valor: brl(t.amount_cents), categoria: t.category_name, conta: t.account_name, ambiente: label(t.scope), quem: names.get(t.user_id) })),
-    analises_calculadas: computeInsights(ctx, scope, today).map((i) => `${i.title}: ${i.text}`),
+    contas_a_pagar: (async () => { const b = await pendingBills(ctx, scope, today, 30); return { vencidas: b.overdue.slice(0, 10).map((x) => ({ desc: x.description, valor: brl(x.amount_cents), data: x.date })), proximos_30_dias: b.upcoming.slice(0, 10).map((x) => ({ desc: x.description, valor: brl(x.amount_cents), data: x.date })) }; })(),
+    ultimas_movimentacoes: (await recentTransactions(ctx, scope, 25)).map((t) => ({ data: t.date, descricao: t.description, tipo: t.type, valor: brl(t.amount_cents), categoria: t.category_name, conta: t.account_name, ambiente: label(t.scope), quem: names.get(t.user_id) })),
+    analises_calculadas: (await computeInsights(ctx, scope, today)).map((i) => `${i.title}: ${i.text}`),
   };
 }
 
@@ -118,8 +118,8 @@ REGRAS OBRIGATÓRIAS:
 - Seja conciso: no máximo ~180 palavras, listas curtas quando ajudarem.`;
 
 // ---------- resposta local (sem provedor externo) ----------
-function localAnswer(ctx, scope, question) {
-  const ins = computeInsights(ctx, scope);
+async function localAnswer(ctx, scope, question) {
+  const ins = await computeInsights(ctx, scope);
   const t = question.toLowerCase();
   const pick = (re) => ins.filter((i) => re.test(i.id));
   let chosen = ins;
@@ -134,8 +134,8 @@ function localAnswer(ctx, scope, question) {
 
 export async function answer(ctx, scope, question, history) {
   const order = providerOrder();
-  if (!order.length) return { text: localAnswer(ctx, scope, question), provider: 'local' };
-  const data = buildContext(ctx, scope);
+  if (!order.length) return { text: await localAnswer(ctx, scope, question), provider: 'local' };
+  const data = await buildContext(ctx, scope);
   const system = `${SYSTEM_PROMPT}\n\nDADOS (JSON, ambiente: ${data.ambiente_consultado}):\n${JSON.stringify(data)}`;
   const messages = [...history.slice(-8).map((h) => ({ role: h.role, content: h.content })), { role: 'user', content: question }];
   let lastErr;
@@ -145,5 +145,5 @@ export async function answer(ctx, scope, question, history) {
       if (text) return { text, provider: name };
     } catch (e) { lastErr = e; console.error('[ia] provedor falhou:', e.message); }
   }
-  return { text: localAnswer(ctx, scope, question) + `\n\n_(Os provedores de IA configurados não responderam agora${lastErr ? '' : ''}.)_`, provider: 'local' };
+  return { text: await localAnswer(ctx, scope, question) + `\n\n_(Os provedores de IA configurados não responderam agora${lastErr ? '' : ''}.)_`, provider: 'local' };
 }
