@@ -39,9 +39,10 @@ export function bankSheet() {
           h('div', { class: 'row' },
             h('button', { class: 'btn grow', type: 'button', onclick: async (e) => {
               await busy(e.currentTarget, async () => {
-                let n = 0;
+                let n = 0, st = null;
+                try { st = await POST('/bank/links/' + l.id + '/refresh'); } catch {}
                 for (const a of l.accounts) { const s = await syncOne(a.id); n += s.imported; }
-                toast(n ? `${n} nova(s) movimentação(ões) importada(s)` : 'Tudo em dia, nada novo'); bus.emit('change'); await load();
+                toast(n ? `${n} nova(s) movimentação(ões) importada(s)` : st && st.status === 'UPDATING' ? 'O banco ainda está atualizando. Tente de novo em 1 minuto.' : st && st.ok === false ? 'Nada novo. O banco não aceitou atualizar agora; ele atualiza sozinho de tempos em tempos.' : 'Tudo em dia, nada novo'); bus.emit('change'); await load();
               });
             } }, icon('repeat', 16), 'Atualizar agora'),
             h('button', { class: 'btn danger-ghost', type: 'button', onclick: async () => {

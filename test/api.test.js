@@ -362,6 +362,7 @@ test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/aj
     const u = new URL(req.url, 'http://x'); const send = (code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
     if (req.method === 'POST' && u.pathname === '/auth') { calls.auth++; return send(200, { apiKey: 'k-teste' }); }
     if (req.headers['x-api-key'] !== 'k-teste') return send(403, { message: 'forbidden' });
+    if (req.method === 'PATCH' && u.pathname === '/items/' + ITEM) { calls.refresh = (calls.refresh || 0) + 1; return send(200, { id: ITEM, status: 'UPDATING' }); }
     if (u.pathname === '/items/' + ITEM) return send(200, { id: ITEM, status: 'UPDATED', connector: { name: 'Banco do Brasil' } });
     if (u.pathname.startsWith('/items/')) return send(404, {});
     if (u.pathname === '/accounts') return send(200, { total: 2, results: [
@@ -414,6 +415,8 @@ test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/aj
     const sc = await A.post(`/api/bank/accounts/${card.id}/sync`); ok(sc); assert.equal(sc.data.imported, 1);
     const st = await A.get('/api/bank'); ok(st);
     assert.equal(st.data.links[0].accounts.find((a) => a.kind === 'checking').diff_cents, 0);
+    const rf = await A.post(`/api/bank/links/${link.data.link_id}/refresh`); ok(rf); assert.equal(rf.data.ok, true); assert.equal(calls.refresh, 1);
+    assert.equal((await B.post(`/api/bank/links/${link.data.link_id}/refresh`)).status, 404);
     // categorias sugeridas por palavras-chave; o resto fica sem categoria para revisão
     const txs = (await A.get('/api/transactions?scope=personal&limit=100')).data.transactions;
     const by = (d) => txs.find((t) => t.description === d);

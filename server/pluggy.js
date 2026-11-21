@@ -47,6 +47,19 @@ function failure(path, r) {
   return new HttpError(502, `O Pluggy retornou um erro (${r.status}${msg ? ': ' + msg : ''}).`);
 }
 
+// Pede ao Pluggy que busque dados novos no banco (melhor esforço) e espera um pouco o resultado.
+export async function refreshItem(id, waitMs = 6000) {
+  let r = await raw('PATCH', '/items/' + encodeURIComponent(id), { body: {}, key: await apiKey() });
+  if (r.status === 401 || r.status === 403) r = await raw('PATCH', '/items/' + encodeURIComponent(id), { body: {}, key: await apiKey(true) });
+  if (r.status < 200 || r.status >= 300) { console.error('[pluggy] refresh', r.status, JSON.stringify(r.data)?.slice(0, 200)); return { ok: false, status: r.data?.status || null, message: r.data?.message || null }; }
+  let status = r.data?.status || 'UPDATING';
+  const end = Date.now() + waitMs;
+  while (status === 'UPDATING' && Date.now() < end) {
+    await new Promise((res) => setTimeout(res, 1200));
+    try { status = (await getItem(id))?.status || status; } catch { break; }
+  }
+  return { ok: true, status };
+}
 export const getItem = (id) => api('/items/' + encodeURIComponent(id));
 export async function listAccounts(itemId) { const d = await api('/accounts', { itemId }); return d?.results || []; }
 

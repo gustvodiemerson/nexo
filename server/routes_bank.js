@@ -104,6 +104,15 @@ post('/api/bank/accounts/:id/sync', async (req) => {
   return await syncBankAccount(req.ctx, ba);
 });
 
+// Pede ao Pluggy para buscar dados novos no banco (antes de importar).
+post('/api/bank/links/:id/refresh', async (req) => {
+  const l = await q.get('SELECT * FROM bank_links WHERE id=? AND user_id=?', Number(req.params.id), req.ctx.userId);
+  if (!l) throw notFound();
+  const r = await pluggy.refreshItem(l.item_id);
+  if (r.status) await q.run('UPDATE bank_links SET status=? WHERE id=?', String(r.status).slice(0, 40), l.id);
+  return r;
+});
+
 // Faz o saldo no NEXO igualar o saldo do banco.
 post('/api/bank/accounts/:id/calibrate', async (req) => {
   const ba = await ownedBankAccount(req.ctx, req.params.id);
