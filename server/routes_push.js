@@ -43,3 +43,4 @@ post('/api/push/test', async (req) => {
   if (!sent) throw bad('Nenhum aparelho recebeu. Ative as notificações neste aparelho e tente de novo.');
   return { sent };
 });
+

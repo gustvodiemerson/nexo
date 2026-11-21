@@ -53,7 +53,11 @@ export async function handleRequest(input) {
   const extra = () => (setCookie ? { 'Set-Cookie': setCookie } : {});
   const { url } = req;
   try {
-    if (url.pathname === '/api/health') return json(200, { ok: true, time: new Date().toISOString() });
+    if (url.pathname === '/api/health') { // diagnóstico sem login e sem dados: servidor e banco respondendo, e quanto demoram
+      const t = Date.now(); let db = 'ok';
+      try { await q.get('SELECT 1 AS x'); } catch (e) { db = 'erro: ' + String(e.message).slice(0, 80); }
+      return json(db === 'ok' ? 200 : 503, { ok: db === 'ok', db, db_ms: Date.now() - t, time: new Date().toISOString() });
+    }
     const m = match(req.method, url.pathname);
     if (!m) {
       if (pathExists(url.pathname)) throw new HttpError(405, 'Método não permitido.');

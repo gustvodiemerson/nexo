@@ -1,9 +1,12 @@
 // Notificações push (Web Push / VAPID). As chaves do servidor são geradas uma vez e guardadas no banco (ou vêm de VAPID_* no ambiente).
-import webpush from 'web-push';
 import { q } from './db.js';
 
 export const GROUPS = { chat: 'chat', due: 'bills', recurring: 'bills', goal: 'goals', vault: 'goals', budget: 'budget', couple: 'couple', activity: 'couple', bank: 'bank' };
 export const DEFAULT_PREFS = { chat: true, bills: true, goals: true, budget: true, couple: true, bank: true };
+
+// A biblioteca é carregada só quando necessária: se falhar, só as notificações são afetadas (nunca o resto do app).
+let wp = null;
+async function lib() { return wp || (wp = (await import('web-push')).default); }
 
 let vapid = null;
 export async function getVapid() {
@@ -13,7 +16,7 @@ export async function getVapid() {
   }
   let row = await q.get("SELECT value FROM app_settings WHERE key='vapid'");
   if (!row) {
-    await q.run("INSERT OR IGNORE INTO app_settings(key,value) VALUES ('vapid', ?)", JSON.stringify(webpush.generateVAPIDKeys()));
+    await q.run("INSERT OR IGNORE INTO app_settings(key,value) VALUES ('vapid', ?)", JSON.stringify((await lib()).generateVAPIDKeys()));
     row = await q.get("SELECT value FROM app_settings WHERE key='vapid'");
   }
   return (vapid = JSON.parse(row.value));
@@ -37,6 +40,7 @@ export async function sendPush(userId, { type, title, body, link, tag }, { force
     if (!force) { const g = GROUPS[type]; if (g && (await getPrefs(userId))[g] === false) return 0; }
     const subs = await q.all('SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE user_id=?', userId);
     if (!subs.length) return 0;
+    const webpush = await lib();
     const keys = await getVapid();
     const payload = JSON.stringify({ title: String(title || 'NEXO').slice(0, 100), body: String(body || '').slice(0, 220), link: link || '#/notificacoes', tag: tag || type || 'nexo' });
     let sent = 0;
