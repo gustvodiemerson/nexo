@@ -192,7 +192,7 @@ export async function txForm(opts = {}) {
         bus.emit('change'); close();
       }, err);
     } },
-      !editing && typeSeg.el, editing && h('div', { class: 'row' }, h('span', { class: 'badge' }, TYPE_LABEL[type]), scopeBadge(scope)),
+      !editing && typeSeg.el, !editing && h('button', { class: 'btn block', type: 'button', onclick: () => { close(); import('./capture.js').then((m) => m.receiptFlow()); } }, icon('camera', 18), 'Escanear nota fiscal'), editing && h('div', { class: 'row' }, h('span', { class: 'badge' }, TYPE_LABEL[type]), scopeBadge(scope)),
       scopeSeg && field('Onde registrar', scopeSeg.el, { hint: scope === 'couple' ? 'Visível para vocês dois.' : 'Só você vê.' }),
       field('Valor', amount.el), field('Descrição', desc), field('Data', date), accField, toField, catField, statusField, instField, recField, autoRow, hint,
       field('Observações', notes), err, btn);

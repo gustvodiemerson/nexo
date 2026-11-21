@@ -1,5 +1,6 @@
 // Ícones SVG (traço 1.8, 24x24). Uso: icon('home', 22)
 const P = {
+  camera: '<path d="M4 8.5A2.5 2.5 0 0 1 6.5 6h1.2a1.5 1.5 0 0 0 1.2-.6l.7-1A1.5 1.5 0 0 1 10.9 4h2.2a1.5 1.5 0 0 1 1.3.6l.7 1a1.5 1.5 0 0 0 1.2.6h1.2A2.5 2.5 0 0 1 20 8.5v8A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5z"/><circle cx="12" cy="12.5" r="3.5"/>',
   home: '<path d="M3 11.5 12 4l9 7.5"/><path d="M5.5 10v9.5a1 1 0 0 0 1 1H10v-5.5h4v5.5h3.5a1 1 0 0 0 1-1V10"/>',
   chart: '<path d="M5 20V11M12 20V5M19 20v-7"/><path d="M3 20.5h18"/>',
   calendar: '<rect x="3.5" y="5" width="17" height="15.5" rx="3"/><path d="M3.5 10h17M8 3v4M16 3v4"/><path d="M8 14h2M12 14h2M8 17h2"/>',

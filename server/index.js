@@ -13,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.resolve(__dirname, '../public');
 const PROD = process.env.NODE_ENV === 'production';
 const TRUST_PROXY = process.env.TRUST_PROXY === '1';
-const MAX_BODY = 1_000_000;
+const MAX_BODY = 2_500_000;
 const sqlNow = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
 const MIME = {

@@ -14,7 +14,7 @@ import './routes_ai.js';
 
 const PROD = process.env.NODE_ENV === 'production' || !!process.env.NETLIFY;
 const COOKIE = 'nexo_sid';
-const MAX_BODY = 1_000_000;
+const MAX_BODY = 2_500_000;
 const sqlNow = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
 
 export const SECURITY = {

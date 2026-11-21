@@ -24,6 +24,12 @@ A função agendada `jobs` roda a cada hora (lançamentos recorrentes, alertas d
 - **Netlify free**: 125 mil chamadas de função/mês e ~10 s por chamada. O app atualiza por *polling* (a cada 15 s; 3 s no chat) só com a aba aberta.
 - A resposta da IA externa tem limite de 8 s; se estourar, o assistente responde em modo local.
 
+## IA que registra e leitura de nota fiscal
+- **Pedir para registrar:** na tela da IA, escreva "gastei 35 no almoço" ou "recebi 3.000 de salário". A IA monta o lançamento, você confere e toca em **Pessoal** ou **Casal** (quem não tem casal vê um botão só). A IA nunca grava sozinha e não edita nem apaga nada.
+- **Nota fiscal por foto:** em *Novo lançamento → Escanear nota fiscal* (ou no ícone de câmera da tela da IA). A IA lê loja, data, itens e valores; você revisa e registra tudo como despesas (item por item ou só o total).
+- **Precisa de chave de IA com visão** nas variáveis da Netlify. A mais fácil: `GEMINI_API_KEY` (chave gratuita em aistudio.google.com). Também servem `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` ou `GROQ_API_KEY`. Sem chave, a IA registra só frases simples (modo local) e a leitura de nota fica indisponível.
+- `VISION_TIMEOUT_MS` (padrão 9000) é o tempo máximo da leitura da nota; aumente se sua conta da Netlify permitir funções mais longas.
+
 ## Rodar local
 ```bash
 npm install

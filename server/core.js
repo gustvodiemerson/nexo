@@ -29,7 +29,7 @@ export function scopeSql(ctx, scope, a = '') {
   const personal = { sql: `(${a}scope='personal' AND ${a}user_id=?)`, params: [ctx.userId] };
   const couple = ctx.coupleId
     ? { sql: `(${a}scope='couple' AND ${a}couple_id=?)`, params: [ctx.coupleId] }
-    : { sql: '(0)', params: [] };
+    : { sql: '(FALSE)', params: [] };
   if (scope === 'personal') return personal;
   if (scope === 'couple') return couple;
   return { sql: `(${personal.sql} OR ${couple.sql})`, params: [...personal.params, ...couple.params] };

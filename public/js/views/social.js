@@ -3,6 +3,7 @@ import {
   h, icon, S, GET, POST, DEL, qs, bus, toast, errMsg, busy, openSheet, confirmDialog, emptyState, skeleton, pageHead, backHead, iconBadge, avatar, seg, money, brl, pct, fmtDate, fmtTime, relDate,
   timeAgo, richText, partnerOf, progressBar, firstName, scopeParam, sqlToDate, todayISO,
 } from '../ui.js';
+import { proposalCard, receiptFlow } from './capture.js';
 
 // ================= CHAT =================
 function attachCard(a) {
@@ -93,7 +94,7 @@ async function shareSheet(send) {
 }
 
 // ================= IA =================
-const SUGG = ['Como foi meu mês até agora?', 'Onde posso economizar?', 'Consigo cumprir minhas metas?', 'Quais contas vencem em breve?'];
+const SUGG = ['Registre uma despesa de 50 reais no mercado', 'Como foi meu mês até agora?', 'Onde posso economizar?', 'Consigo cumprir minhas metas?', 'Quais contas vencem em breve?'];
 export async function iaView() {
   const status = await GET('/ai/status').catch(() => ({ mode: 'local', active: 'local' }));
   let scope = S.couple ? (S.scope || 'all') : 'personal';
@@ -103,7 +104,7 @@ export async function iaView() {
     wrap.replaceChildren(skeleton(2, 50));
     try {
       const r = await GET('/ai/history' + qs({ scope })); wrap.replaceChildren();
-      if (!r.messages.length) wrap.append(h('div', { class: 'bubble' }, richText('Olá! Sou a **IA do Nexo**. Analiso **somente os seus dados reais** (receitas, despesas, metas e investimentos) e não invento valores. Pergunte à vontade.')));
+      if (!r.messages.length) wrap.append(h('div', { class: 'bubble' }, richText('Olá! Sou a **IA do Nexo**. Analiso **somente os seus dados reais** (receitas, despesas, metas e investimentos) e não invento valores. Pergunte à vontade, ou peça para **registrar** uma despesa/receita (ex.: “gastei 35 no almoço”) — eu monto o lançamento e você confirma. Também leio **notas fiscais** pela câmera 📷.')));
       r.messages.forEach((m) => msg(m.role, m.content));
     } catch (e) { wrap.replaceChildren(h('p', { class: 'err-text' }, errMsg(e))); }
     log.scrollTop = log.scrollHeight;
@@ -114,9 +115,9 @@ export async function iaView() {
   async function ask(text) {
     text = text.trim(); if (!text || busyFlag) return; busyFlag = true; input.value = '';
     msg('user', text); const typing = h('div', { class: 'bubble' }, h('div', { class: 'typing' }, h('i'), h('i'), h('i'))); wrap.append(typing); log.scrollTop = log.scrollHeight;
-    try { const r = await POST('/ai/chat', { scope, message: text }); typing.remove(); msg('assistant', r.reply); } catch (e) { typing.remove(); toast(errMsg(e), 'err'); } finally { busyFlag = false; }
+    try { const r = await POST('/ai/chat', { scope, message: text }); typing.remove(); const b = msg('assistant', r.reply); if (r.proposal && r.proposal.items?.length) { b.append(proposalCard(r.proposal.items, { onDone: () => { log.scrollTop = log.scrollHeight; } })); log.scrollTop = log.scrollHeight; } } catch (e) { typing.remove(); toast(errMsg(e), 'err'); } finally { busyFlag = false; }
   }
-  const form = h('form', { class: 'composer', onsubmit: (e) => { e.preventDefault(); ask(input.value); } }, input, h('button', { class: 'btn primary', type: 'submit', 'aria-label': 'Enviar' }, icon('send', 20)));
+  const form = h('form', { class: 'composer', onsubmit: (e) => { e.preventDefault(); ask(input.value); } }, h('button', { class: 'btn', type: 'button', 'aria-label': 'Ler nota fiscal por foto', title: 'Ler nota fiscal por foto', onclick: () => receiptFlow() }, icon('camera', 20)), input, h('button', { class: 'btn primary', type: 'submit', 'aria-label': 'Enviar' }, icon('send', 20)));
   input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } };
   const sc = S.couple ? seg([{ v: 'all', l: 'Tudo' }, { v: 'personal', l: 'Pessoal' }, { v: 'couple', l: 'Casal' }], scope, (v) => { scope = v; draw(); }, 'sm') : null;
   root.append(pageHead('Assistente de IA', status.mode === 'external' ? `Conectado: ${status.active}` : 'Modo local (sem provedor externo configurado)', h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Limpar conversa', onclick: async () => { if (await confirmDialog({ title: 'Limpar conversa?', text: 'O histórico com a IA será apagado.', confirm: 'Limpar', danger: true })) { try { await DEL('/ai/history'); draw(); } catch (e) { toast(errMsg(e), 'err'); } } } }, icon('trash', 18))),

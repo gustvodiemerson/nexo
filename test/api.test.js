@@ -285,6 +285,71 @@ test('assistente de IA: modo local usa apenas dados reais e respeita escopo', as
   assert.ok(!ctxB.includes('Nubank') && !ctxB.includes('Salário')); // dados pessoais de A não vazam para o contexto de B
 });
 
+test('IA registra movimentações (propostas), lançamentos em lote e leitura de nota fiscal', async () => {
+  // modo local: entende frases simples e NÃO grava nada sozinho
+  const before = (await A.get('/api/transactions?scope=personal')).data.count;
+  const c1 = await A.post('/api/ai/chat', { scope: 'personal', message: 'gastei 35,50 no almoço ontem' }); ok(c1);
+  assert.equal(c1.data.proposal.items.length, 1);
+  const it = c1.data.proposal.items[0];
+  assert.deepEqual([it.type, it.amount_cents, it.description], ['expense', 3550, 'Almoço']);
+  assert.ok(it.date < today);
+  assert.equal((await A.get('/api/transactions?scope=personal')).data.count, before);
+  const c2 = await A.post('/api/ai/chat', { scope: 'personal', message: 'quanto gastei no mercado este mês?' }); ok(c2);
+  assert.equal(c2.data.proposal, null);
+  const c3 = await A.post('/api/ai/chat', { scope: 'personal', message: 'recebi 3.000,00 de salário' }); ok(c3);
+  assert.deepEqual([c3.data.proposal.items[0].type, c3.data.proposal.items[0].amount_cents], ['income', 300000]);
+
+  // lote
+  const L = (await A.get('/api/lookups?scope=all')).data;
+  const acc = L.accounts.find((a) => a.scope === 'personal' && a.type !== 'card');
+  const cat = L.categories.find((c) => c.scope === 'personal' && c.kind === 'expense');
+  const body = { scope: 'personal', batch: 'teste-lote-1', account_id: acc.id, items: [
+    { type: 'expense', description: 'Leite', amount_cents: 700, date: today, category_id: cat.id },
+    { type: 'expense', description: 'Pão', amount_cents: 1500, date: today } ] };
+  const b1 = await A.post('/api/transactions/bulk', body); ok(b1, 201); assert.equal(b1.data.created, 2); assert.equal(b1.data.expense_cents, 2200);
+  const b2 = await A.post('/api/transactions/bulk', body); ok(b2); assert.equal(b2.data.duplicate, true);
+  assert.equal((await A.get('/api/transactions?scope=personal')).data.count, before + 2);
+  assert.equal((await A.post('/api/transactions/bulk', { ...body, batch: 'x2', scope: 'couple' })).status, 400); // conta pessoal em lote do casal
+  assert.equal((await A.post('/api/transactions/bulk', { ...body, batch: 'x3', items: [{ ...body.items[0], amount_cents: 0 }] })).status, 400);
+  const bB = await B.post('/api/transactions/bulk', { ...body, batch: 'x4' }); assert.ok([400, 403, 404].includes(bB.status), 'B não pode usar a conta de A: ' + bB.status + JSON.stringify(bB.data));
+
+  // provedor externo simulado (compatível com OpenAI): proposta e nota fiscal
+  const seen = [];
+  const http = await import('node:http');
+  const mock = http.createServer((req, res) => {
+    let raw = ''; req.on('data', (c) => (raw += c)); req.on('end', () => {
+      const j = JSON.parse(raw); seen.push(j);
+      const isReceipt = j.messages[0].content.includes('notas fiscais');
+      const content = isReceipt
+        ? JSON.stringify({ legivel: true, loja: 'Mercado Bom', data: today, total: 30.5, itens: [{ descricao: 'Arroz 5kg', valor: 22.9, categoria: cat.name }, { descricao: 'Feijão', valor: 7.6, categoria: null }, { descricao: 'Lixo', valor: -3, categoria: null }] })
+        : '```json\n' + JSON.stringify({ acao: 'registrar', itens: [{ tipo: 'despesa', descricao: 'Farmácia', valor: 42.9, categoria: null, conta: null, data: today, situacao: 'pago' }], mensagem: 'Entendi: despesa de R$ 42,90 em Farmácia.' }) + '\n```';
+      res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content } }] }));
+    });
+  });
+  await new Promise((r) => mock.listen(0, '127.0.0.1', r));
+  Object.assign(process.env, { OPENAI_API_KEY: 'teste', OPENAI_BASE_URL: `http://127.0.0.1:${mock.address().port}`, AI_PROVIDER: 'openai' });
+  try {
+    assert.equal((await A.get('/api/ai/status')).data.receipts, true);
+    const c4 = await A.post('/api/ai/chat', { scope: 'personal', message: 'coloca 42,90 da farmácia' }); ok(c4);
+    assert.equal(c4.data.proposal.items[0].amount_cents, 4290); assert.match(c4.data.reply, /Farmácia/);
+    assert.ok(!c4.data.reply.includes('{'), 'o JSON não vaza para o chat');
+    const img = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBD';
+    const r1 = await A.post('/api/ai/receipt', { image: img }); ok(r1);
+    const rc = r1.data.receipt;
+    assert.equal(rc.readable, true); assert.equal(rc.store, 'Mercado Bom'); assert.equal(rc.items.length, 2); // o item negativo é descartado
+    assert.equal(rc.items[0].amount_cents, 2290); assert.equal(rc.total_cents, 3050); assert.equal(rc.items_sum_cents, 3050);
+    const sent = seen.at(-1).messages.at(-1).content;
+    assert.ok(Array.isArray(sent) && sent.some((p) => p.type === 'image_url' && p.image_url.url === img), 'a imagem chega ao provedor');
+    assert.equal((await A.post('/api/ai/receipt', { image: 'nao-e-imagem' })).status, 400);
+    assert.equal((await new Client('anon').post('/api/ai/receipt', { image: img })).status, 401);
+  } finally {
+    mock.close(); delete process.env.OPENAI_API_KEY; delete process.env.OPENAI_BASE_URL; delete process.env.AI_PROVIDER;
+  }
+  // sem provedor: nota fiscal indisponível com mensagem clara
+  const r2 = await A.post('/api/ai/receipt', { image: 'data:image/jpeg;base64,/9j/4AAQ' }); assert.equal(r2.status, 503);
+  assert.equal((await A.get('/api/ai/status')).data.receipts, false);
+});
+
 test('perfil, sessões, auditoria e exclusão de conta preservando o casal', async () => {
   ok(await A.patch('/api/profile', { name: 'Ana Maria' }));
   const s = await A.get('/api/profile/sessions'); ok(s); assert.ok(s.data.sessions.some((x) => x.current));

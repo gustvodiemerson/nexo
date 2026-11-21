@@ -287,6 +287,50 @@ post('/api/transactions', async (req) => {
   return { transaction: await q.get(`${TX_SELECT} WHERE t.id=?`, firstId) };
 });
 
+
+// Vários lançamentos de uma vez (itens de uma nota fiscal, pedidos da IA). Tudo ou nada.
+post('/api/transactions/bulk', async (req) => {
+  const ctx = req.ctx, b = req.body;
+  const scope = v.oneOf(b.scope, ['personal', 'couple'], { field: 'escopo' });
+  const target = writeTarget(ctx, scope);
+  const batch = v.str(b.batch, { field: 'lote', max: 60 });
+  if (!Array.isArray(b.items) || !b.items.length || b.items.length > 60) throw bad('Envie de 1 a 60 itens.');
+  const defAccount = b.account_id ? await getAccountFor(ctx, b.account_id) : null;
+  const ex = await q.get('SELECT COUNT(*) AS n FROM transactions WHERE user_id=? AND idempotency_key LIKE ?', ctx.userId, batch + '-%');
+  if (ex.n > 0) return { created: 0, duplicate: true };
+  const rows = [];
+  for (const [i, it] of b.items.entries()) {
+    const type = v.oneOf(it.type, ['income', 'expense'], { field: 'tipo' });
+    const account = it.account_id ? await getAccountFor(ctx, it.account_id) : defAccount;
+    if (!account) throw bad('Escolha a conta.', 'account_id');
+    if (account.scope !== scope) throw bad('A conta precisa pertencer ao mesmo ambiente (pessoal/casal) do lançamento.', 'account_id');
+    rows.push({
+      type, account, amount: v.cents(it.amount_cents), date: v.date(it.date), description: v.str(it.description, { field: 'descrição', max: 120 }),
+      status: v.oneOf(it.status, ['paid', 'pending'], { def: 'paid', field: 'situação' }), category: await getCategoryFor(ctx, it.category_id, scope, type), idem: `${batch}-${i}`,
+    });
+  }
+  const ids = await tx(async () => {
+    const out = [];
+    for (const r of rows) {
+      out.push(Number((await q.run(
+        `INSERT INTO transactions(scope,user_id,couple_id,account_id,to_account_id,type,amount_cents,date,due_date,status,category_id,description,notes,
+           recurring_id,installment_group,installment_no,installment_total,idempotency_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        target.scope, target.user_id, target.couple_id, r.account.id, null, r.type, r.amount, r.date, r.status === 'pending' ? r.date : null,
+        r.status, r.category?.id ?? null, r.description, v.str(b.notes, { field: 'observações', max: 500, required: false }), null, null, null, null, r.idem,
+      )).lastInsertRowid));
+    }
+    return out;
+  });
+  const total = rows.reduce((a, r) => a + (r.type === 'expense' ? r.amount : 0), 0);
+  await audit(ctx, 'transaction.bulk', 'transaction', ids[0], { count: ids.length, expense_cents: total, source: b.source ? String(b.source).slice(0, 20) : null }, scope);
+  for (const date of new Set(rows.filter((r) => r.type === 'expense' && r.status === 'paid').map((r) => r.date.slice(0, 7)))) {
+    await checkBudgetAlerts(ctx, scope, date + '-01', notify);
+  }
+  await emitChange(ctx, scope, 'transactions');
+  req.status = 201;
+  return { created: ids.length, expense_cents: total };
+});
+
 patch('/api/transactions/:id', async (req) => {
   const ctx = req.ctx, b = req.body;
   const row = await getOwned('transactions', req.params.id, ctx, { write: true });
