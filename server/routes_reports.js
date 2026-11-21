@@ -22,24 +22,22 @@ get('/api/dashboard', async (req) => {
   await runUserJobs(ctx, today);
   const from = monthStart(today), to = monthEnd(today);
   const prevMonthEnd = monthEnd(addMonths(today, -1));
-  const bal = await balanceSummary(ctx, scope);
-  const prevBal = await balanceSummary(ctx, scope, prevMonthEnd);
-  const cur = await sums(ctx, scope, from, to), prev = await sums(ctx, scope, monthStart(addMonths(today, -1)), prevMonthEnd);
-  const inv = await investmentsSummary(ctx, scope);
-  const prevInv = await investmentsSummary(ctx, scope, prevMonthEnd);
-  const vlt = await vaultsSummary(ctx, scope);
-  const goals = await goalsWithProgress(ctx, scope, today);
-  const budgets = await budgetStatus(ctx, scope, today);
+  const trendEnds = [5, 4, 3, 2, 1].map((i) => monthEnd(addMonths(today, -i)));
+  const vsc = scopeSql(ctx, scope, 'vv.');
+  // consultas independentes rodam em paralelo (o banco é remoto: cada ida e volta custa)
+  const [bal, prevBal, cur, prev, inv, prevInv, vlt, goals, budgets, bills, trendPast, vaultRow, series, recent, insights, cnt] = await Promise.all([
+    balanceSummary(ctx, scope), balanceSummary(ctx, scope, prevMonthEnd),
+    sums(ctx, scope, from, to), sums(ctx, scope, monthStart(addMonths(today, -1)), prevMonthEnd),
+    investmentsSummary(ctx, scope), investmentsSummary(ctx, scope, prevMonthEnd),
+    vaultsSummary(ctx, scope), goalsWithProgress(ctx, scope, today), budgetStatus(ctx, scope, today), pendingBills(ctx, scope, today, 30),
+    Promise.all(trendEnds.map((e) => balanceSummary(ctx, scope, e))),
+    q.get(`SELECT IFNULL(SUM(CASE WHEN m.type='deposit' THEN m.amount_cents ELSE -m.amount_cents END),0) AS s FROM vault_movements m JOIN vaults vv ON vv.id=m.vault_id
+     WHERE ${vsc.sql} AND m.date BETWEEN ? AND ?`, ...vsc.params, from, to),
+    monthlySeries(ctx, scope, today, 6), recentTransactions(ctx, scope, 6), computeInsights(ctx, scope, today).then((x) => x.slice(0, 3)), counters(ctx),
+  ]);
   const overall = budgets.find((b) => !b.category_id) || null;
-  const bills = await pendingBills(ctx, scope, today, 30);
-  const trend = [];
-  for (let i = 5; i >= 0; i--) {
-    const e = i === 0 ? today : monthEnd(addMonths(today, -i));
-    trend.push({ month: ym(e), total_cents: i === 0 ? bal.total_cents : (await balanceSummary(ctx, scope, e)).total_cents });
-  }
-  const vaultMonthDeposits = (await q.get(
-    `SELECT IFNULL(SUM(CASE WHEN m.type='deposit' THEN m.amount_cents ELSE -m.amount_cents END),0) AS s FROM vault_movements m JOIN vaults vv ON vv.id=m.vault_id
-     WHERE ${scopeSql(ctx, scope, 'vv.').sql} AND m.date BETWEEN ? AND ?`, ...scopeSql(ctx, scope, 'vv.').params, from, to)).s;
+  const trend = [...trendEnds.map((e, i) => ({ month: ym(e), total_cents: trendPast[i].total_cents })), { month: ym(today), total_cents: bal.total_cents }];
+  const vaultMonthDeposits = vaultRow.s;
   const prevTotal = prevBal.total_cents;
   return {
     scope, today, month: ym(today),
@@ -48,16 +46,16 @@ get('/api/dashboard', async (req) => {
       change_pct: prevTotal !== 0 ? (bal.total_cents - prevTotal) / Math.abs(prevTotal) : null, accounts_count: bal.accounts.length, trend,
     },
     month_summary: { income_cents: cur.income, expense_cents: cur.expense, net_cents: cur.income - cur.expense, saved_cents: vaultMonthDeposits, prev_income_cents: prev.income, prev_expense_cents: prev.expense },
-    series: await monthlySeries(ctx, scope, today, 6),
+    series,
     investments: { invested_cents: inv.invested_cents, value_cents: inv.value_cents, return_cents: inv.return_cents, return_pct: inv.return_pct, planned_cents: inv.planned_cents,
       change_pct: prevInv.value_cents ? (inv.value_cents - prevInv.value_cents) / prevInv.value_cents : null, count: inv.items.length },
     vaults: { total_cents: vlt.total_cents, items: vlt.items.slice(0, 4).map((i) => ({ id: i.id, name: i.name, scope: i.scope, balance_cents: i.balance_cents, target_cents: i.target_cents, color: i.color })) },
     goals: { achieved: goals.filter((g) => g.achieved).length, total: goals.length, items: goals.filter((g) => !g.achieved).slice(0, 3) },
     budget: overall || (budgets.length ? { limit_cents: budgets.reduce((x, b) => x + b.limit_cents, 0), spent_cents: budgets.reduce((x, b) => x + b.spent_cents, 0), pct: budgets.reduce((x, b) => x + b.spent_cents, 0) / budgets.reduce((x, b) => x + b.limit_cents, 0), derived: true } : null),
-    recent: await recentTransactions(ctx, scope, 6),
+    recent,
     bills: { overdue_count: bills.overdue.length, overdue_cents: bills.overdue.filter((b) => b.type === 'expense').reduce((x, b) => x + b.amount_cents, 0), next: [...bills.overdue, ...bills.upcoming].slice(0, 4) },
-    insights: (await computeInsights(ctx, scope, today)).slice(0, 3),
-    counters: await counters(ctx),
+    insights,
+    counters: cnt,
   };
 });
 

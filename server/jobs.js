@@ -39,7 +39,9 @@ export async function materializeRecurring(today = todayISO()) {
   return created;
 }
 
+const lastRun = new Map(); // usuário -> quando rodou; evita refazer ~10 consultas a cada abertura do painel
 export async function runUserJobs(ctx, today = todayISO()) {
+  if (process.env.NODE_ENV !== 'test') { const t = lastRun.get(ctx.userId); if (t && Date.now() - t < 10 * 60_000) return; lastRun.set(ctx.userId, Date.now()); }
   await materializeRecurring(today);
   try {
     const bills = await pendingBills(ctx, ctx.coupleId ? 'all' : 'personal', today, 3);

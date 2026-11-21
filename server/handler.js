@@ -29,11 +29,16 @@ const json = (status, obj, extra = {}) => ({ status, headers: { 'Content-Type': 
 async function authenticate(req) {
   const token = parseCookies(req.headers.cookie || '')[COOKIE];
   if (!token) return;
-  const s = await q.get('SELECT * FROM sessions WHERE token_hash=? AND expires_at>?', sha256(token), sqlNow());
+  // sessão + usuário + casal numa só consulta (o banco é remoto: cada ida e volta custa)
+  const s = await q.get(
+    `SELECT s.*, to_jsonb(u) AS _user, cm.couple_id AS _couple_id, cm.role AS _role, cm.can_edit AS _can_edit
+     FROM sessions s JOIN users u ON u.id=s.user_id LEFT JOIN couple_members cm ON cm.user_id=s.user_id
+     WHERE s.token_hash=? AND s.expires_at>?`, sha256(token), sqlNow());
   if (!s) return;
-  const user = await q.get('SELECT * FROM users WHERE id=?', s.user_id);
-  if (!user) return;
-  req.session = s; req.user = user; req.ctx = await getCtx(user, req.ip);
+  const user = typeof s._user === 'string' ? JSON.parse(s._user) : s._user;
+  const { _user, _couple_id, _role, _can_edit, ...session } = s;
+  req.session = session; req.user = user;
+  req.ctx = { user, userId: user.id, ip: req.ip, coupleId: _couple_id ?? null, role: _role ?? null, canEditCouple: _couple_id ? !!_can_edit : false };
   if (Date.now() - new Date(s.last_seen_at.replace(' ', 'T') + 'Z').getTime() > 300_000) await q.run("UPDATE sessions SET last_seen_at=datetime('now') WHERE id=?", s.id);
 }
 

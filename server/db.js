@@ -41,7 +41,7 @@ async function makePg(url) {
   pg.types.setTypeParser(20, Number);
   pg.types.setTypeParser(1700, Number);
   const ssl = process.env.DATABASE_SSL === '0' ? false : { rejectUnauthorized: false };
-  const pool = new pg.Pool({ connectionString: url, max: Number(process.env.PG_POOL_MAX) || 1, ssl, idleTimeoutMillis: 10_000, connectionTimeoutMillis: 8_000 });
+  const pool = new pg.Pool({ connectionString: url, max: Number(process.env.PG_POOL_MAX) || 4, ssl, idleTimeoutMillis: 10_000, connectionTimeoutMillis: 8_000 });
   pool.on('error', (e) => console.error('[pg pool]', e.message));
   const wrap = (r) => ({ rows: r.rows, count: r.rowCount });
   return {
