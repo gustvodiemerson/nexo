@@ -46,3 +46,16 @@ Com `DATABASE_URL` definida, o servidor local usa esse Postgres.
 
 ## Estrutura
 `server/` regras e rotas (`handler.js` é o núcleo HTTP, `db.js` o acesso ao Postgres) · `netlify/functions/` `api.mjs` e `jobs.mjs` · `db/schema.sql` esquema · `public/` PWA.
+
+## Bancos conectados (Pluggy / MeuPluggy)
+
+Somente leitura: o NEXO consulta saldos e extratos, nunca movimenta dinheiro.
+
+1. Conecte o banco em **meu.pluggy.ai** (gratuito para uso pessoal).
+2. Em **dashboard.pluggy.ai** crie/abra uma aplicação de desenvolvimento e guarde o Client ID e o Client Secret nas variáveis `PLUGGY_CLIENT_ID` e `PLUGGY_CLIENT_SECRET` (Netlify, "Contains secret values"). Refaça o deploy.
+3. No dashboard, toque em **Iniciar Demo**, autorize o MeuPluggy do banco e, no menu ⋮, **Copiar Item ID** (um por banco).
+4. No NEXO: **Finanças → Contas → Bancos conectados**, cole o Item ID, escolha para qual conta do NEXO cada conta do banco vai e conecte.
+
+Como funciona: os últimos 90 dias são importados sem duplicar (cada lançamento guarda o id do banco), o saldo da conta é ajustado para igualar o do banco (muda só o saldo inicial) e uma rotina a cada hora atualiza as contas (cada uma a cada ~6 h). Lançamentos ainda pendentes no banco só entram quando efetivados. As categorias são sugeridas por palavras-chave; o que não for reconhecido fica "Sem categoria" para você revisar. Cartão: importa as compras; o saldo do cartão não é ajustado.
+
+Também há **Ajustar saldo ao valor real** em qualquer conta sem banco conectado.

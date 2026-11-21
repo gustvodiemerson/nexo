@@ -350,6 +350,89 @@ test('IA registra movimentações (propostas), lançamentos em lote e leitura de
   assert.equal((await A.get('/api/ai/status')).data.receipts, false);
 });
 
+test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/ajustar saldo e isolamento', async () => {
+  const ITEM = '11111111-2222-3333-4444-555555555555';
+  assert.equal((await A.get('/api/bank')).data.configured, false);
+  assert.equal((await A.post('/api/bank/preview', { item_id: ITEM })).status, 503);
+  // Pluggy simulado
+  const state = { balance: 448.11, extra: [] };
+  const http = await import('node:http');
+  const calls = { auth: 0, tx: 0 };
+  const mock = http.createServer((req, res) => {
+    const u = new URL(req.url, 'http://x'); const send = (code, o) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(o)); };
+    if (req.method === 'POST' && u.pathname === '/auth') { calls.auth++; return send(200, { apiKey: 'k-teste' }); }
+    if (req.headers['x-api-key'] !== 'k-teste') return send(403, { message: 'forbidden' });
+    if (u.pathname === '/items/' + ITEM) return send(200, { id: ITEM, status: 'UPDATED', connector: { name: 'Banco do Brasil' } });
+    if (u.pathname.startsWith('/items/')) return send(404, {});
+    if (u.pathname === '/accounts') return send(200, { total: 2, results: [
+      { id: 'acc-cc', type: 'BANK', subtype: 'CHECKING_ACCOUNT', name: 'Conta Corrente', balance: state.balance },
+      { id: 'acc-cartao', type: 'CREDIT', subtype: 'CREDIT_CARD', name: 'Ourocard Elo', balance: 120.5 } ] });
+    if (u.pathname === '/transactions') {
+      calls.tx++;
+      const acc = u.searchParams.get('accountId');
+      const list = acc === 'acc-cc' ? [
+        { id: 't1', description: 'MERCADO BOM PRECO', amount: -35.9, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' },
+        { id: 't2', description: 'UBER *TRIP', amount: -20, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' },
+        { id: 't3', description: 'SALARIO EMPRESA', amount: 1000, type: 'CREDIT', date: today + 'T00:00:00.000Z', status: 'POSTED' },
+        { id: 't4', description: 'PENDENTE', amount: -9, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'PENDING' },
+        { id: 't5', description: 'PIX ENVIADO FULANO', amount: -50, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' },
+        ...state.extra ] : [{ id: 'c1', description: 'NETFLIX', amount: 39.9, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' }];
+      return send(200, { total: list.length, totalPages: 1, page: 1, results: list });
+    }
+    send(404, {});
+  });
+  await new Promise((r) => mock.listen(0, '127.0.0.1', r));
+  Object.assign(process.env, { PLUGGY_CLIENT_ID: 'cid', PLUGGY_CLIENT_SECRET: 'csecret', PLUGGY_BASE_URL: `http://127.0.0.1:${mock.address().port}` });
+  try {
+    assert.equal((await A.get('/api/bank')).data.configured, true);
+    assert.equal((await A.post('/api/bank/preview', { item_id: 'abc' })).status, 400);
+    assert.equal((await A.post('/api/bank/preview', { item_id: '99999999-2222-3333-4444-555555555555' })).status, 404);
+    const pv = await A.post('/api/bank/preview', { item_id: ITEM }); ok(pv);
+    assert.equal(pv.data.connector, 'Banco do Brasil'); assert.equal(pv.data.accounts.length, 2);
+    assert.deepEqual(pv.data.accounts.map((a) => [a.kind, a.balance_cents]), [['checking', 44811], ['card', 12050]]);
+    const link = await A.post('/api/bank/links', { item_id: ITEM, mappings: {} }); ok(link, 201);
+    assert.equal(link.data.accounts.length, 2);
+    assert.equal((await B.post('/api/bank/links', { item_id: ITEM, mappings: {} })).status, 409); // um Item ID só pode ter um dono
+    const [cc, card] = link.data.accounts;
+    // 1ª sincronização: importa 4 (o pendente fica de fora) e iguala o saldo ao do banco
+    const s1 = await A.post(`/api/bank/accounts/${cc.id}/sync`); ok(s1);
+    assert.equal(s1.data.imported, 4); assert.equal(s1.data.diff_cents, 0); assert.equal(s1.data.nexo_cents, 44811);
+    const s2 = await A.post(`/api/bank/accounts/${cc.id}/sync`); ok(s2); assert.equal(s2.data.imported, 0); // sem duplicar
+    const sc = await A.post(`/api/bank/accounts/${card.id}/sync`); ok(sc); assert.equal(sc.data.imported, 1);
+    const st = await A.get('/api/bank'); ok(st);
+    assert.equal(st.data.links[0].accounts.find((a) => a.kind === 'checking').diff_cents, 0);
+    // categorias sugeridas por palavras-chave; o resto fica sem categoria para revisão
+    const txs = (await A.get('/api/transactions?scope=personal&limit=100')).data.transactions;
+    const by = (d) => txs.find((t) => t.description === d);
+    assert.equal(by('MERCADO BOM PRECO').category_name, 'Alimentação'); assert.equal(by('MERCADO BOM PRECO').amount_cents, 3590); assert.equal(by('MERCADO BOM PRECO').type, 'expense');
+    assert.equal(by('UBER *TRIP').category_name, 'Transporte');
+    assert.equal(by('SALARIO EMPRESA').type, 'income'); assert.equal(by('SALARIO EMPRESA').category_name, 'Salário');
+    assert.equal(by('PIX ENVIADO FULANO').category_name, null);
+    // movimentação nova no banco: importa 1; saldo do banco não bate até o usuário ajustar
+    state.extra.push({ id: 't6', description: 'PADARIA', amount: -12.3, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' });
+    const s3 = await A.post(`/api/bank/accounts/${cc.id}/sync`); ok(s3); assert.equal(s3.data.imported, 1); assert.equal(s3.data.diff_cents, 1230);
+    const cal = await A.post(`/api/bank/accounts/${cc.id}/calibrate`); ok(cal); assert.equal(cal.data.diff_cents, 0); assert.equal(cal.data.nexo_cents, 44811);
+    assert.equal((await A.post(`/api/bank/accounts/${card.id}/calibrate`)).status, 400);
+    // isolamento: B não enxerga nem sincroniza o banco de A
+    assert.deepEqual((await B.get('/api/bank')).data.links, []);
+    assert.equal((await B.post(`/api/bank/accounts/${cc.id}/sync`)).status, 404);
+    assert.equal((await B.del(`/api/bank/links/${link.data.link_id}`)).status, 404);
+    // ajuste manual de saldo (conta sem banco)
+    const L = (await A.get('/api/lookups?scope=personal')).data;
+    const manual = L.accounts.find((a) => a.type !== 'card' && a.id !== cc.account_id && !st.data.links[0].accounts.some((x) => x.account_id === a.id));
+    const adj = await A.post(`/api/accounts/${manual.id}/adjust-balance`, { balance_cents: 100000 }); ok(adj);
+    assert.equal((await A.get('/api/accounts?scope=personal')).data.accounts.find((a) => a.id === manual.id).balance_cents, 100000);
+    assert.equal((await B.post(`/api/accounts/${manual.id}/adjust-balance`, { balance_cents: 1 })).status, 404);
+    // desconectar mantém os lançamentos importados
+    const n0 = (await A.get('/api/transactions?scope=personal')).data.count;
+    ok(await A.del(`/api/bank/links/${link.data.link_id}`));
+    assert.equal((await A.get('/api/transactions?scope=personal')).data.count, n0);
+    assert.deepEqual((await A.get('/api/bank')).data.links, []);
+  } finally {
+    mock.close(); delete process.env.PLUGGY_CLIENT_ID; delete process.env.PLUGGY_CLIENT_SECRET; delete process.env.PLUGGY_BASE_URL;
+  }
+});
+
 test('perfil, sessões, auditoria e exclusão de conta preservando o casal', async () => {
   ok(await A.patch('/api/profile', { name: 'Ana Maria' }));
   const s = await A.get('/api/profile/sessions'); ok(s); assert.ok(s.data.sessions.some((x) => x.current));

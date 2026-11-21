@@ -4,6 +4,7 @@ import {
   emptyState, skeleton, openSheet, confirmDialog, scopeSwitch, scopeParam, monthNav, sectionTitle, pageHead, progressBar, money, signedMoney, brl, relDate, fmtDate,
   monthLabel, monthEndISO, todayISO, addMonthsYM, debounce, uid, canEditCouple, hasCouple, firstName, num2, pct,
 } from '../ui.js';
+import { bankSheet, adjustBalanceSheet } from './bank.js';
 
 export const PALETTE = ['#7aa2ff', '#ff5d8f', '#ffb454', '#3ddc97', '#b38cff', '#4cc9f0', '#ff8fb8', '#ffd166', '#f4a261', '#9aa7ff'];
 const TYPE_LABEL = { income: 'Receita', expense: 'Despesa', transfer: 'Transferência' };
@@ -317,6 +318,7 @@ function accountSheet(a) {
       h('div', { class: 'card flat pad-sm' }, h('div', { class: 'list' }, rows.map(([k, v]) => h('div', { class: 'list-item', style: { minHeight: '44px' } }, h('span', { class: 'muted grow' }, k), h('span', { style: { fontWeight: 600 } }, v))))),
       h('button', { class: 'btn block', type: 'button', onclick: () => { setMovFilter({ account_id: a.id, category_id: '', type: '', status: '', q: '', month: '' }); close(); location.hash = '#/movimentos'; } }, icon('list', 18), 'Ver movimentações'),
       a.type === 'card' && writable && h('button', { class: 'btn primary block', type: 'button', onclick: () => { close(); txForm({ type: 'transfer', scope: a.scope }); } }, icon('swap', 18), 'Pagar fatura (transferência)'),
+      a.type !== 'card' && writable && !a.archived && h('button', { class: 'btn block', type: 'button', onclick: () => { close(); adjustBalanceSheet(a); } }, icon('edit', 18), 'Ajustar saldo ao valor real'),
       writable && h('div', { class: 'row' },
         h('button', { class: 'btn grow', type: 'button', onclick: () => { close(); accountForm(a); } }, icon('edit', 18), 'Editar'),
         h('button', { class: 'btn grow', type: 'button', onclick: async () => { try { await PATCH('/accounts/' + a.id, { archived: !a.archived }); toast(a.archived ? 'Conta reativada' : 'Conta arquivada'); bus.emit('change'); close(); } catch (e) { toast(errMsg(e), 'err'); } } }, icon('download', 18), a.archived ? 'Reativar' : 'Arquivar')),
@@ -342,6 +344,7 @@ export async function contasView() {
     const meta = ACC_TYPE[t];
     root.append(sectionTitle(meta[0] + (list.length > 1 ? 's' : '')), h('div', { class: 'card pad-sm' }, h('div', { class: 'list' }, list.map((a) => accRow(a)))));
   }
+  root.append(h('button', { class: 'btn block', type: 'button', onclick: () => bankSheet() }, icon('bank', 18), 'Bancos conectados (Banco do Brasil, InfinitePay…)'));
   const arc = h('button', { class: 'chip' + (showArchived ? ' active' : ''), type: 'button', onclick: () => { showArchived = !showArchived; bus.emit('scope-refresh'); } }, icon('download', 15), showArchived ? 'Ocultar arquivadas' : 'Ver arquivadas');
   root.append(h('div', null, arc));
   if (arch && arch.accounts.length) root.append(h('div', { class: 'card pad-sm' }, h('div', { class: 'list' }, arch.accounts.map((a) => accRow({ ...a, archived: 1 })))));

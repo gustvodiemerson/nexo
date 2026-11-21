@@ -4,6 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { SCHEMA } from './schema.js';
+import { MIGRATIONS } from './migrations.js';
 
 const NOW_SQL = `to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS')`;
 const NO_ID_TABLES = new Set(['couple_members', 'chat_reads', 'rate_limits', 'schema_migrations']);
@@ -92,10 +93,19 @@ export function getDriver() {
       await d.migrateLock(async (run) => {
         await run(`CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (${NOW_SQL}))`);
         const current = Number((await run('SELECT COALESCE(MAX(version),0) AS v FROM schema_migrations')).rows[0].v);
-        if (current < 1) {
+        let applied = current;
+        if (applied < 1) {
           await run('BEGIN');
           try { await run(SCHEMA); await run("INSERT INTO schema_migrations(version) VALUES (1)"); await run('COMMIT'); }
           catch (e) { try { await run('ROLLBACK'); } catch {} throw e; }
+          applied = 1;
+        }
+        for (const m of MIGRATIONS) {
+          if (m.version <= applied) continue;
+          await run('BEGIN');
+          try { await run(m.sql); await run(`INSERT INTO schema_migrations(version) VALUES (${Number(m.version)})`); await run('COMMIT'); }
+          catch (e) { try { await run('ROLLBACK'); } catch {} throw e; }
+          applied = m.version;
         }
       });
       return d;

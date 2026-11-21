@@ -3,6 +3,7 @@ import { q, tx } from './db.js';
 import { addMonths, addDays, todayISO } from './lib.js';
 import { notify, getCtx, coupleMemberIds } from './core.js';
 import { pendingBills, goalsWithProgress, brl } from './calc.js';
+import { syncAllBanks } from './bank.js';
 
 const next = (d, f) => (f === 'weekly' ? addDays(d, 7) : f === 'yearly' ? addMonths(d, 12) : addMonths(d, 1));
 
@@ -60,4 +61,5 @@ export async function runGlobalJobs() {
   const today = todayISO();
   await materializeRecurring(today);
   for (const u of await q.all('SELECT * FROM users')) await runUserJobs(await getCtx(u, null), today);
+  try { await syncAllBanks(); } catch (e) { console.error('sync bancário falhou', e.message); }
 }

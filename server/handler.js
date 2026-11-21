@@ -11,6 +11,7 @@ import './routes_vault.js';
 import './routes_reports.js';
 import './routes_social.js';
 import './routes_ai.js';
+import './routes_bank.js';
 
 const PROD = process.env.NODE_ENV === 'production' || !!process.env.NETLIFY;
 const COOKIE = 'nexo_sid';
