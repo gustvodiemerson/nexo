@@ -355,7 +355,7 @@ test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/aj
   assert.equal((await A.get('/api/bank')).data.configured, false);
   assert.equal((await A.post('/api/bank/preview', { item_id: ITEM })).status, 503);
   // Pluggy simulado
-  const state = { balance: 448.11, extra: [] };
+  const state = { balance: 448.11, extra: [], v2: true };
   const http = await import('node:http');
   const calls = { auth: 0, tx: 0 };
   const mock = http.createServer((req, res) => {
@@ -367,6 +367,19 @@ test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/aj
     if (u.pathname === '/accounts') return send(200, { total: 2, results: [
       { id: 'acc-cc', type: 'BANK', subtype: 'CHECKING_ACCOUNT', name: 'Conta Corrente', balance: state.balance },
       { id: 'acc-cartao', type: 'CREDIT', subtype: 'CREDIT_CARD', name: 'Ourocard Elo', balance: 120.5 } ] });
+    if (u.pathname === '/v2/transactions') {
+      if (!state.v2) return send(500, { message: 'indisponível' });
+      const acc = u.searchParams.get('accountId'), after = u.searchParams.get('after');
+      const all = acc === 'acc-cc' ? [
+        { id: 't1', description: 'MERCADO BOM PRECO', amount: -35.9, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' },
+        { id: 't2', description: 'UBER *TRIP', amount: -20, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' },
+        { id: 't3', description: 'SALARIO EMPRESA', amount: 1000, type: 'CREDIT', date: today + 'T00:00:00.000Z', status: 'POSTED' },
+        { id: 't4', description: 'PENDENTE', amount: -9, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'PENDING' },
+        { id: 't5', description: 'PIX ENVIADO FULANO', amount: -50, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' },
+        ...state.extra ] : [{ id: 'c1', description: 'NETFLIX', amount: 39.9, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' }];
+      if (all.length > 2 && !after) return send(200, { results: all.slice(0, 2), next: `https://api.pluggy.ai/v2/transactions?accountId=${acc}&after=p2` });
+      return send(200, { results: after ? all.slice(2) : all, next: null });
+    }
     if (u.pathname === '/transactions') {
       calls.tx++;
       const acc = u.searchParams.get('accountId');
@@ -409,6 +422,7 @@ test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/aj
     assert.equal(by('SALARIO EMPRESA').type, 'income'); assert.equal(by('SALARIO EMPRESA').category_name, 'Salário');
     assert.equal(by('PIX ENVIADO FULANO').category_name, null);
     // movimentação nova no banco: importa 1; saldo do banco não bate até o usuário ajustar
+    state.v2 = false; // a API nova fica fora do ar: cai para a antiga
     state.extra.push({ id: 't6', description: 'PADARIA', amount: -12.3, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' });
     const s3 = await A.post(`/api/bank/accounts/${cc.id}/sync`); ok(s3); assert.equal(s3.data.imported, 1); assert.equal(s3.data.diff_cents, 1230);
     const cal = await A.post(`/api/bank/accounts/${cc.id}/calibrate`); ok(cal); assert.equal(cal.data.diff_cents, 0); assert.equal(cal.data.nexo_cents, 44811);

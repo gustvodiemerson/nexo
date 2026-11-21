@@ -32,21 +32,39 @@ async function apiKey(force = false) {
   return cache.key;
 }
 
-async function api(path, params) {
+async function api(path, params, { soft = false } = {}) {
   let r = await raw('GET', path, { params, key: await apiKey() });
   if (r.status === 401 || r.status === 403) r = await raw('GET', path, { params, key: await apiKey(true) });
+  if (soft && (r.status < 200 || r.status >= 300)) return { failed: r };
   if (r.status === 404) throw new HttpError(404, 'Não encontrado no Pluggy. Confira o Item ID.');
   if (r.status === 429) throw new HttpError(429, 'Limite de consultas do Pluggy atingido. Tente de novo em alguns minutos.');
-  if (r.status < 200 || r.status >= 300) { console.error('[pluggy]', path, r.status, JSON.stringify(r.data)?.slice(0, 200)); throw new HttpError(502, 'O Pluggy retornou um erro. Tente novamente.'); }
+  if (r.status < 200 || r.status >= 300) throw failure(path, r);
   return r.data;
+}
+function failure(path, r) {
+  const msg = String(r.data?.message || r.data?.error || '').replace(/\s+/g, ' ').slice(0, 140);
+  console.error('[pluggy]', path, r.status, JSON.stringify(r.data)?.slice(0, 300));
+  return new HttpError(502, `O Pluggy retornou um erro (${r.status}${msg ? ': ' + msg : ''}).`);
 }
 
 export const getItem = (id) => api('/items/' + encodeURIComponent(id));
 export async function listAccounts(itemId) { const d = await api('/accounts', { itemId }); return d?.results || []; }
 
 // Lançamentos de uma conta no intervalo [from, to] (YYYY-MM-DD), todas as páginas.
+// Usa a API nova (v2, por cursor) e, se ela falhar, a antiga (v1, por página, marcada como obsoleta pelo Pluggy).
 export async function listTransactions(accountId, from, to) {
   const out = [];
+  let after = null, ok = true;
+  for (let i = 0; i < 12; i++) {
+    const d = await api('/v2/transactions', { accountId, dateFrom: from, dateTo: to, after }, { soft: true });
+    if (d.failed) { ok = false; console.error('[pluggy] v2 falhou', d.failed.status, JSON.stringify(d.failed.data)?.slice(0, 200)); break; }
+    out.push(...(d.results || []));
+    const next = d.next ? String(d.next) : null;
+    after = next ? new URLSearchParams(next.includes('?') ? next.slice(next.indexOf('?') + 1) : next).get('after') : null;
+    if (!after) return out;
+  }
+  if (ok) return out;
+  out.length = 0;
   for (let page = 1; page <= 12; page++) {
     const d = await api('/transactions', { accountId, from, to, pageSize: 500, page });
     out.push(...(d?.results || []));
