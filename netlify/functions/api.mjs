@@ -2,6 +2,8 @@
 import { handleRequest } from '../../server/handler.js';
 
 export default async (request, context) => {
+  // permite que o envio de notificações continue depois da resposta (não atrasa o app)
+  if (typeof context?.waitUntil === 'function') globalThis.__nexoWaitUntil = (p) => context.waitUntil(p.catch(() => {}));
   const url = new URL(request.url);
   const method = request.method;
   const headers = Object.fromEntries(request.headers);

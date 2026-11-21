@@ -54,7 +54,11 @@ export async function sendPush(userId, { type, title, body, link, tag }, { force
   } catch (e) { console.error('[push] falhou', e.message); return 0; }
 }
 
-// Usado pelas rotas: não deixa um provedor lento segurar a resposta por mais de ~3 s.
+// Usado pelas rotas. Na Netlify, o envio continua depois que a resposta já saiu (context.waitUntil), então não atrasa
+// chat nem lançamentos. Fora dela (servidor local/testes), espera no máximo ~3 s.
 export function pushSoon(userId, msg) {
-  return Promise.race([sendPush(userId, msg), new Promise((r) => setTimeout(() => r(0), 3000))]);
+  const p = sendPush(userId, msg);
+  const defer = globalThis.__nexoWaitUntil;
+  if (typeof defer === 'function') { try { defer(p); return Promise.resolve(0); } catch { /* cai no modo normal */ } }
+  return Promise.race([p, new Promise((r) => setTimeout(() => r(0), 3000))]);
 }
