@@ -7,7 +7,7 @@ import { SCHEMA } from './schema.js';
 import { MIGRATIONS } from './migrations.js';
 
 const NOW_SQL = `to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS')`;
-const NO_ID_TABLES = new Set(['couple_members', 'chat_reads', 'rate_limits', 'schema_migrations']);
+const NO_ID_TABLES = new Set(['couple_members', 'chat_reads', 'rate_limits', 'schema_migrations', 'app_settings', 'push_prefs']);
 
 // ---- tradução de dialeto (o código das rotas foi escrito em SQL "estilo SQLite") ----
 function prep(sql, { forRun = false } = {}) {

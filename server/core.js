@@ -1,6 +1,7 @@
 // Contexto de acesso, escopos (pessoal/casal), auditoria, eventos em tempo real e notificações.
 import { q, tx } from './db.js';
 import { bad, forbidden, notFound } from './lib.js';
+import { pushSoon } from './push.js';
 
 // ---------- contexto ----------
 export async function getCtx(user, ip) {
@@ -126,7 +127,7 @@ export async function notify(userId, { type, title, body, link, dedupe }) {
       'INSERT OR IGNORE INTO notifications(user_id,type,title,body,link,dedupe_key) VALUES (?,?,?,?,?,?)',
       userId, type, title, body || null, link || null, dedupe || null,
     );
-    if (r.changes) await emit([userId], 'notification', { type, title, body, link });
+    if (r.changes) { await emit([userId], 'notification', { type, title, body, link }); await pushSoon(userId, { type, title, body, link, tag: dedupe || type }); }
   } catch (e) { console.error('notify falhou', e.message); }
 }
 

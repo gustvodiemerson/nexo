@@ -175,11 +175,20 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && S.
 function connectEvents() { if (!polling && S.me) { polling = true; cursor = null; schedulePoll(50); } }
 function disconnectEvents() { polling = false; clearTimeout(pollTimer); pollTimer = null; cursor = null; }
 
+// ---------- bancos: atualiza ao abrir o app e ao voltar para ele ----------
+let lastBank = 0;
+async function autoBankSync() {
+  if (!S.me || document.hidden || Date.now() - lastBank < 180_000) return;
+  lastBank = Date.now();
+  try { const r = await POST('/bank/auto-sync'); if (r && r.imported) { toast(`${r.imported} nova(s) movimentação(ões) do banco`); bus.emit('change'); } } catch { /* sem banco ou sem rede: ignora */ }
+}
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') autoBankSync(); });
+
 // ---------- sessão ----------
 bus.on('session', () => {
   closeAllSheets();
   if (S.me) {
-    connectEvents(); refreshCounters();
+    connectEvents(); refreshCounters(); setTimeout(autoBankSync, 1500);
     const p = parseHash().path;
     const pend = sessionStorage.getItem('nexo.invite');
     const target = pend && !S.couple ? '#/convite/' + pend : (find(p)?.route.guest || p === '/' ? '#/' : null);
@@ -203,6 +212,7 @@ window.addEventListener('online', () => { toast('Conexão restabelecida.'); bus.
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.me) { refreshCounters(); refreshView(); } });
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'nexo-open' && S.me && /^#\//.test(e.data.link || '')) location.hash = e.data.link; });
 }
 
 // ---------- início ----------

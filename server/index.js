@@ -8,6 +8,7 @@ import { handleRequest, SECURITY } from './handler.js';
 import { runGlobalJobs } from './jobs.js';
 import { rateCleanup } from './lib.js';
 import { eventsCleanup } from './core.js';
+import { syncAllBanks } from './bank.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.resolve(__dirname, '../public');
@@ -95,6 +96,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   server.listen(port, process.env.HOST || '0.0.0.0', () => console.log(`NEXO rodando em http://localhost:${port}`));
   runGlobalJobs().catch((e) => console.error('jobs iniciais falharam', e.message));
   setInterval(() => runGlobalJobs().catch((e) => console.error(e.message)), 3600_000).unref();
+  setInterval(() => syncAllBanks().catch((e) => console.error(e.message)), 10 * 60_000).unref();
   setInterval(() => housekeeping().catch((e) => console.error(e.message)), 6 * 3600_000).unref();
   const stop = () => { server.close(async () => { await closeDb(); process.exit(0); }); setTimeout(() => process.exit(0), 3000).unref(); };
   process.on('SIGTERM', stop); process.on('SIGINT', stop);

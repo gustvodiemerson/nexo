@@ -1,8 +1,9 @@
 // Sincronização bancária: importa lançamentos do Pluggy sem duplicar e confere o saldo com o do banco.
 import { q, tx } from './db.js';
 import { addDays, todayISO } from './lib.js';
-import { accountBalances, audit, emitChange } from './core.js';
+import { accountBalances, audit, emitChange, notify } from './core.js';
 import * as pluggy from './pluggy.js';
+import { brl } from './calc.js';
 
 const BACKFILL_DAYS = () => Math.min(365, Math.max(7, Number(process.env.BANK_BACKFILL_DAYS) || 90));
 const OVERLAP_DAYS = 10;
@@ -31,6 +32,17 @@ export async function calibrate(ba) {
   return diff_cents;
 }
 
+const sign = (t) => (t.type === 'income' ? '+' : '−') + brl(t.amount_cents);
+async function tellImported(ctx, link, ba, fresh) {
+  const where = `${link.connector || 'Banco'}${ba.kind === 'card' ? ' (cartão)' : ''}`;
+  const shown = fresh.slice(0, 3).map((t) => `${sign(t)} ${t.description}`).join(' · ');
+  await notify(ctx.userId, {
+    type: 'bank', link: '#/movimentacoes', dedupe: `bank:${ba.id}:${Date.now()}`,
+    title: fresh.length === 1 ? `${where}: nova movimentação` : `${where}: ${fresh.length} novas movimentações`,
+    body: shown + (fresh.length > 3 ? ` e mais ${fresh.length - 3}` : ''),
+  });
+}
+
 // Sincroniza uma conta do banco. `ctx` = { userId, ip }.
 export async function syncBankAccount(ctx, ba, { firstCalibrate = true } = {}) {
   const link = await q.get('SELECT * FROM bank_links WHERE id=?', ba.link_id);
@@ -49,7 +61,7 @@ export async function syncBankAccount(ctx, ba, { firstCalibrate = true } = {}) {
     const from = first ? addDays(today, -BACKFILL_DAYS()) : addDays(ba.synced_to, -OVERLAP_DAYS);
     const list = (await pluggy.listTransactions(ba.pluggy_account_id, from, today)).map(pluggy.normalizeTx).filter(Boolean);
     const cats = await categoryIndex(ctx.userId);
-    let imported = 0;
+    const fresh = [];
     if (list.length) {
       await tx(async () => {
         for (let i = 0; i < list.length; i += 80) {
@@ -59,17 +71,23 @@ export async function syncBankAccount(ctx, ba, { firstCalibrate = true } = {}) {
             const cn = pluggy.guessCategoryName(t.description, t.type);
             return [ctx.userId, ba.account_id, t.type, t.amount_cents, t.date, cn ? cats.get(t.type + ':' + cn) ?? null : null, t.description, t.external_id];
           });
-          const r = await q.run(
-            `INSERT OR IGNORE INTO transactions(scope,user_id,couple_id,account_id,type,amount_cents,date,status,category_id,description,external_id) VALUES ${ph}`, ...params);
-          imported += r.changes || 0;
+          const rows = await q.all(
+            `INSERT INTO transactions(scope,user_id,couple_id,account_id,type,amount_cents,date,status,category_id,description,external_id) VALUES ${ph}
+             ON CONFLICT DO NOTHING RETURNING type, amount_cents, description, date`, ...params);
+          fresh.push(...rows);
         }
       });
     }
+    const imported = fresh.length;
     await q.run('UPDATE bank_accounts SET synced_to=? WHERE id=?', today, ba.id);
     await q.run("UPDATE bank_links SET last_sync_at=datetime('now'), last_error=NULL WHERE id=?", link.id);
     let calibrated = null;
     if (first && firstCalibrate) calibrated = await calibrate(ba);
-    if (imported) { await audit(ctx, 'bank.sync', 'bank_account', ba.id, { imported }, 'personal'); await emitChange(ctx, 'personal', 'transactions'); }
+    if (imported) {
+      await audit(ctx, 'bank.sync', 'bank_account', ba.id, { imported }, 'personal');
+      await emitChange(ctx, 'personal', 'transactions');
+      if (!first) await tellImported(ctx, link, ba, fresh);
+    }
     const chk = await balanceCheck(ba);
     return { imported, fetched: list.length, calibrated_cents: calibrated, ...chk };
   } catch (e) {
@@ -78,18 +96,32 @@ export async function syncBankAccount(ctx, ba, { firstCalibrate = true } = {}) {
   }
 }
 
-// Rotina automática (a cada hora, mas cada conta só é consultada a cada ~6 h). Respeita um orçamento de tempo.
-export async function syncAllBanks({ budgetMs = 20_000, minAgeMs = 6 * 3600_000 } = {}) {
-  if (!pluggy.configured()) return 0;
+const ago = (t) => (t ? Date.now() - new Date(String(t).replace(' ', 'T') + 'Z').getTime() : Infinity);
+const REFRESH_EVERY = 30 * 60_000; // pede ao Pluggy para buscar no banco, no máximo a cada 30 min por banco
+
+// Atualiza os bancos de um usuário (ou de todos, se userId for nulo): pede atualização ao Pluggy de tempos em tempos
+// e importa o que houver de novo. Respeita um orçamento de tempo (funções serverless têm limite).
+export async function syncBanks({ userId = null, budgetMs = 8000, minAgeMs = 2 * 60_000, refresh = true } = {}) {
+  if (!pluggy.configured()) return { imported: 0, links: 0 };
   const started = Date.now();
-  let n = 0;
-  const rows = await q.all(
-    `SELECT ba.*, l.last_sync_at FROM bank_accounts ba JOIN bank_links l ON l.id=ba.link_id WHERE ba.account_id IS NOT NULL ORDER BY l.last_sync_at NULLS FIRST`);
-  for (const ba of rows) {
+  const links = await q.all(`SELECT * FROM bank_links ${userId ? 'WHERE user_id=?' : ''} ORDER BY last_sync_at NULLS FIRST`, ...(userId ? [userId] : []));
+  let imported = 0;
+  for (const l of links) {
     if (Date.now() - started > budgetMs) break;
-    if (ba.last_sync_at && Date.now() - new Date(ba.last_sync_at.replace(' ', 'T') + 'Z').getTime() < minAgeMs) continue;
-    try { await syncBankAccount({ userId: ba.user_id, ip: null }, ba, { firstCalibrate: false }); n++; }
-    catch (e) { console.error('[bank sync]', ba.id, e.message); }
+    if (ago(l.last_sync_at) < minAgeMs) continue;
+    try {
+      if (refresh && ago(l.last_refresh_at) > REFRESH_EVERY) {
+        await q.run("UPDATE bank_links SET last_refresh_at=datetime('now') WHERE id=?", l.id);
+        await pluggy.refreshItem(l.item_id, 0).catch(() => {});
+      }
+      const accs = await q.all('SELECT * FROM bank_accounts WHERE link_id=? AND account_id IS NOT NULL', l.id);
+      for (const ba of accs) {
+        if (Date.now() - started > budgetMs) break;
+        const r = await syncBankAccount({ userId: l.user_id, ip: null }, ba, { firstCalibrate: false });
+        imported += r.imported;
+      }
+    } catch (e) { console.error('[bank sync]', l.id, e.message); }
   }
-  return n;
+  return { imported, links: links.length };
 }
+export const syncAllBanks = (opts = {}) => syncBanks({ budgetMs: 20_000, minAgeMs: 8 * 60_000, ...opts });

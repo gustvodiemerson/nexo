@@ -36,4 +36,25 @@ ALTER TABLE bank_links ENABLE ROW LEVEL SECURITY;
 ALTER TABLE bank_accounts ENABLE ROW LEVEL SECURITY;
 `,
   },
+  {
+    version: 3, // notificações push, chaves do servidor e controle de atualização dos bancos
+    sql: `
+CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE push_subscriptions (
+  id BIGSERIAL PRIMARY KEY,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL UNIQUE,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  user_agent TEXT,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS'))
+);
+CREATE INDEX idx_push_user ON push_subscriptions(user_id);
+CREATE TABLE push_prefs (user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, prefs TEXT NOT NULL);
+ALTER TABLE bank_links ADD COLUMN last_refresh_at TEXT;
+ALTER TABLE app_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE push_subscriptions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE push_prefs ENABLE ROW LEVEL SECURITY;
+`,
+  },
 ];

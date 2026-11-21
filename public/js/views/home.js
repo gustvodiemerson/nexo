@@ -1,10 +1,11 @@
 // Dashboard inicial (tela principal do NEXO).
 import {
   h, icon, S, GET, qs, bus, scopeParam, scopeSwitch, brandEl, topActions, greeting, coupleTitle, money, brl, spct, pct, monthLabel, iconBadge, progressBar,
-  sectionTitle, toggleHide, firstName, emptyState, fmtDate, relDate, hasCouple, avatar,
+  toast, errMsg, sectionTitle, toggleHide, firstName, emptyState, fmtDate, relDate, hasCouple, avatar,
 } from '../ui.js';
 import { sparkline, ring } from '../charts.js';
 import { txRow, txForm, accountForm } from './money.js';
+import { pushState, enablePush } from './push.js';
 
 const quick = (ic, label, color, props) => h(props.href ? 'a' : 'button', { type: props.href ? undefined : 'button', class: '', style: { '--c': color }, ...props }, icon(ic, 30), h('span', null, label));
 
@@ -123,5 +124,18 @@ export async function homeView() {
     h('div', { class: 'row' }, iconBadge('brain', '#38d5ff', 'lg', 28), h('div', { class: 'grow' }, h('div', { style: { fontWeight: 650 } }, 'IA do Nexo'), h('div', { class: 'small muted' }, d.insights.length && d.insights[0].id !== 'empty' ? d.insights[0].title : 'Precisa de uma ajuda? Pergunte sobre seus gastos, investimentos e metas.')), icon('chevron', 20))));
 
   root.append(hero, wrapBalance, body);
+  // convite (uma vez) para ativar as notificações no celular
+  try {
+    if (!localStorage.getItem('nexo.pushAsked')) {
+      pushState().then((st) => {
+        if (!st.supported || st.enabled || st.permission !== 'default') return;
+        const card = h('div', { class: 'card glow stack' }, h('div', { class: 'row' }, iconBadge('bell', '#ffc857'), h('div', { class: 'grow' }, h('div', { style: { fontWeight: 650 } }, 'Ativar avisos no celular?'), h('div', { class: 'small muted' }, 'Chat do casal, contas a vencer e movimentações do banco, com valores.'))),
+          h('div', { class: 'row' },
+            h('button', { class: 'btn primary grow', type: 'button', onclick: async () => { try { await enablePush(); toast('Notificações ativadas'); } catch (e) { toast(errMsg(e), 'err'); } try { localStorage.setItem('nexo.pushAsked', '1'); } catch { /* ignore */ } card.remove(); } }, 'Ativar'),
+            h('button', { class: 'btn', type: 'button', onclick: () => { try { localStorage.setItem('nexo.pushAsked', '1'); } catch { /* ignore */ } card.remove(); } }, 'Agora não')));
+        body.prepend(card);
+      });
+    }
+  } catch { /* ignore */ }
   return root;
 }

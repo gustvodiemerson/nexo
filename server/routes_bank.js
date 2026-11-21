@@ -4,7 +4,7 @@ import { get, post, del } from './router.js';
 import { v, bad, notFound, HttpError } from './lib.js';
 import { getOwned, accountBalances, audit, emitChange } from './core.js';
 import * as pluggy from './pluggy.js';
-import { syncBankAccount, calibrate, balanceCheck } from './bank.js';
+import { syncBankAccount, calibrate, balanceCheck, syncBanks } from './bank.js';
 
 const ITEM_RE = /^[0-9a-fA-F-]{20,64}$/;
 const itemId = (s) => { const t = String(s || '').trim(); if (!ITEM_RE.test(t)) throw bad('Item ID inválido. Copie o código completo no app demo do Pluggy.', 'item_id'); return t.toLowerCase(); };
@@ -103,6 +103,9 @@ post('/api/bank/accounts/:id/sync', async (req) => {
   const ba = await ownedBankAccount(req.ctx, req.params.id);
   return await syncBankAccount(req.ctx, ba);
 });
+
+// Chamada ao abrir/voltar ao app: pede atualização e importa o que houver de novo (rápida, com limite de tempo).
+post('/api/bank/auto-sync', async (req) => await syncBanks({ userId: req.ctx.userId, budgetMs: 7000, minAgeMs: 90_000 }));
 
 // Pede ao Pluggy para buscar dados novos no banco (antes de importar).
 post('/api/bank/links/:id/refresh', async (req) => {

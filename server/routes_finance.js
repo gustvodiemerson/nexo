@@ -5,7 +5,8 @@ import { v, bad, forbidden, notFound, HttpError, uuid, todayISO, addMonths, addD
 import {
   parseScope, scopeSql, writeTarget, getOwned, getAccountFor, canRead, canWrite, audit, emitChange, notify, accountBalances,
 } from './core.js';
-import { balanceSummary, budgetStatus, pendingBills, checkBudgetAlerts, sums } from './calc.js';
+import { balanceSummary, budgetStatus, pendingBills, checkBudgetAlerts, sums, brl } from './calc.js';
+import { coupleMemberIds } from './core.js';
 
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const color = (c) => (typeof c === 'string' && COLOR_RE.test(c) ? c : null);
@@ -209,6 +210,13 @@ function nextOccurrence(date, freq) {
 
 const isUniqueError = (e) => e?.code === '23505' || /duplicate key|UNIQUE constraint/i.test(String(e?.message));
 
+
+// Avisa o(a) parceiro(a) quando alguém registra algo no ambiente do casal.
+async function tellPartner(ctx, scope, title, body) {
+  if (scope !== 'couple' || !ctx.coupleId) return;
+  for (const uid of (await coupleMemberIds(ctx.coupleId)).filter((id) => id !== ctx.userId)) await notify(uid, { type: 'activity', title, body, link: '#/movimentacoes' });
+}
+
 post('/api/transactions', async (req) => {
   const ctx = req.ctx, b = req.body;
   const scope = v.oneOf(b.scope, ['personal', 'couple'], { field: 'escopo' });
@@ -283,6 +291,7 @@ post('/api/transactions', async (req) => {
   await audit(ctx, 'transaction.create', 'transaction', firstId, { type, amount_cents: amount, date, status, installments, recurring: !!rec, account_id: account.id }, scope);
   if (type === 'expense' && status === 'paid') await checkBudgetAlerts(ctx, scope, date, notify);
   await emitChange(ctx, scope, 'transactions');
+  if (type !== 'transfer') await tellPartner(ctx, scope, `${ctx.user.name} registrou ${type === 'income' ? 'uma receita' : 'uma despesa'}`, `${brl(amount)} · ${description}`);
   req.status = 201;
   return { transaction: await q.get(`${TX_SELECT} WHERE t.id=?`, firstId) };
 });
@@ -327,6 +336,7 @@ post('/api/transactions/bulk', async (req) => {
     await checkBudgetAlerts(ctx, scope, date + '-01', notify);
   }
   await emitChange(ctx, scope, 'transactions');
+  await tellPartner(ctx, scope, `${ctx.user.name} registrou ${ids.length} movimentaç${ids.length > 1 ? 'ões' : 'ão'}`, rows.length === 1 ? `${brl(rows[0].amount)} · ${rows[0].description}` : `Total de despesas ${brl(total)}`);
   req.status = 201;
   return { created: ids.length, expense_cents: total };
 });

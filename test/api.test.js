@@ -350,6 +350,43 @@ test('IA registra movimentações (propostas), lançamentos em lote e leitura de
   assert.equal((await A.get('/api/ai/status')).data.receipts, false);
 });
 
+const pushCalls = [];
+test('notificações push: inscrição, preferências, chat, atividade do casal e isolamento', async () => {
+  const { default: webpush } = await import('web-push');
+  webpush.sendNotification = async (sub, payload) => { pushCalls.push({ endpoint: sub.endpoint, ...JSON.parse(payload) }); return { statusCode: 201 }; };
+  const subOf = (n) => ({ endpoint: `https://push.example.test/send/${n}-1234567890`, keys: { p256dh: 'BP' + 'x'.repeat(40), auth: 'auth' + n + 'secret' } });
+  const cfg = await A.get('/api/push/config'); ok(cfg);
+  assert.ok(cfg.data.publicKey.length > 40); assert.equal(cfg.data.devices, 0); assert.equal(cfg.data.prefs.chat, true);
+  assert.equal((await new Client('anon').get('/api/push/config')).status, 401);
+  assert.equal((await A.post('/api/push/subscribe', { subscription: { endpoint: 'http://inseguro', keys: {} } })).status, 400);
+  ok(await A.post('/api/push/subscribe', { subscription: subOf('A') }), 201);
+  ok(await B.post('/api/push/subscribe', { subscription: subOf('B') }), 201);
+  assert.equal((await A.get('/api/push/config')).data.devices, 1);
+  // teste direto
+  ok(await A.post('/api/push/test')); assert.equal(pushCalls.at(-1).endpoint, subOf('A').endpoint); assert.equal(pushCalls.at(-1).title, 'NEXO • teste');
+  // chat: A escreve, B recebe (e A não)
+  pushCalls.length = 0;
+  ok(await A.post('/api/chat', { body: 'Compra do mercado hoje?' }), 201);
+  assert.deepEqual(pushCalls.map((c) => c.endpoint), [subOf('B').endpoint]); assert.ok(pushCalls[0].body.includes('Compra do mercado'));
+  // preferência desligada: B não recebe mais mensagens de chat
+  ok(await B.patch('/api/push/prefs', { chat: false })); assert.equal((await B.get('/api/push/config')).data.prefs.chat, false);
+  pushCalls.length = 0;
+  ok(await A.post('/api/chat', { body: 'Sem aviso' }), 201); assert.equal(pushCalls.length, 0);
+  ok(await B.patch('/api/push/prefs', { chat: true }));
+  // atividade do casal: lançamento no ambiente do casal avisa o parceiro, com valor
+  const L = (await A.get('/api/lookups?scope=couple')).data;
+  const acc = L.accounts.find((a) => a.scope === 'couple' && a.type !== 'card'), cat = L.categories.find((c) => c.scope === 'couple' && c.kind === 'expense');
+  pushCalls.length = 0;
+  const t = await A.post('/api/transactions', { scope: 'couple', type: 'expense', account_id: acc.id, category_id: cat.id, amount_cents: 12345, date: today, description: 'Feira do bairro' });
+  if (t.status === 201) { const m = pushCalls.find((c) => c.endpoint === subOf('B').endpoint && c.title.includes('registrou')); assert.ok(m, 'B deveria ser avisado'); assert.ok(m.body.includes('123,45') && m.body.includes('Feira do bairro')); assert.ok(!pushCalls.some((c) => c.endpoint === subOf('A').endpoint && c.title.includes('registrou'))); ok(await A.del('/api/transactions/' + t.data.transaction.id)); }
+  // aparelho que deixou de existir (410) é removido
+  webpush.sendNotification = async () => { const e = new Error('gone'); e.statusCode = 410; throw e; };
+  assert.equal((await B.post('/api/push/test')).status, 400); assert.equal((await B.get('/api/push/config')).data.devices, 0);
+  webpush.sendNotification = async (sub, payload) => { pushCalls.push({ endpoint: sub.endpoint, ...JSON.parse(payload) }); return { statusCode: 201 }; };
+  ok(await A.post('/api/push/unsubscribe', {})); assert.equal((await A.get('/api/push/config')).data.devices, 0);
+  ok(await A.post('/api/push/subscribe', { subscription: subOf('A') }), 201); // A volta a receber no teste dos bancos
+});
+
 test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/ajustar saldo e isolamento', async () => {
   const ITEM = '11111111-2222-3333-4444-555555555555';
   assert.equal((await A.get('/api/bank')).data.configured, false);
@@ -427,7 +464,9 @@ test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/aj
     // movimentação nova no banco: importa 1; saldo do banco não bate até o usuário ajustar
     state.v2 = false; // a API nova fica fora do ar: cai para a antiga
     state.extra.push({ id: 't6', description: 'PADARIA', amount: -12.3, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' });
+    pushCalls.length = 0;
     const s3 = await A.post(`/api/bank/accounts/${cc.id}/sync`); ok(s3); assert.equal(s3.data.imported, 1); assert.equal(s3.data.diff_cents, 1230);
+    const bp = pushCalls.find((c) => c.title.includes('Banco do Brasil')); assert.ok(bp, 'aviso de movimentação nova do banco'); assert.ok(bp.body.includes('12,30') && bp.body.includes('PADARIA'));
     const cal = await A.post(`/api/bank/accounts/${cc.id}/calibrate`); ok(cal); assert.equal(cal.data.diff_cents, 0); assert.equal(cal.data.nexo_cents, 44811);
     assert.equal((await A.post(`/api/bank/accounts/${card.id}/calibrate`)).status, 400);
     // isolamento: B não enxerga nem sincroniza o banco de A

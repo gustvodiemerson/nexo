@@ -4,6 +4,7 @@ import {
   timeAgo, richText, partnerOf, progressBar, firstName, scopeParam, sqlToDate, todayISO,
 } from '../ui.js';
 import { proposalCard, receiptFlow } from './capture.js';
+import { pushCard } from './push.js';
 
 // ================= CHAT =================
 function attachCard(a) {
@@ -128,13 +129,14 @@ export async function iaView() {
 }
 
 // ================= NOTIFICAÇÕES =================
-const NOTIF_ICON = { chat: ['chat', '#ff3d9a'], budget: ['alert', '#ffc857'], goal: ['target', '#b38cff'], vault: ['vault', '#ffc857'], couple: ['heart', '#ff3d9a'], bill: ['receipt', '#ffb454'] };
+const NOTIF_ICON = {
+  activity: ['couple', '#ff3d9a'], bank: ['bank', '#4cc9f0'], chat: ['chat', '#ff3d9a'], budget: ['alert', '#ffc857'], goal: ['target', '#b38cff'], vault: ['vault', '#ffc857'], couple: ['heart', '#ff3d9a'], bill: ['receipt', '#ffb454'] };
 export async function notificacoesView() {
   const r = await GET('/notifications');
   const root = h('div', { class: 'view' }, backHead('Notificações', r.unread ? `${r.unread} nova(s)` : 'Tudo em dia', h('div', { class: 'row' },
     h('button', { class: 'btn sm', type: 'button', onclick: async () => { try { await POST('/notifications/read', {}); bus.emit('change'); } catch (e) { toast(errMsg(e), 'err'); } } }, icon('check', 15), 'Ler todas'),
     h('button', { class: 'icon-btn sm', type: 'button', 'aria-label': 'Limpar lidas', onclick: async () => { try { await DEL('/notifications'); bus.emit('change'); } catch (e) { toast(errMsg(e), 'err'); } } }, icon('trash', 15))), '#/'));
-  root.append(r.notifications.length ? h('div', { class: 'card pad-sm' }, h('div', { class: 'list' }, r.notifications.map((n) => {
+  root.append(pushCard(), r.notifications.length ? h('div', { class: 'card pad-sm' }, h('div', { class: 'list' }, r.notifications.map((n) => {
     const [ic, col] = NOTIF_ICON[n.type] || ['bell', '#3b82ff'];
     return h('button', { class: 'list-item', type: 'button', onclick: async () => { if (!n.read_at) { try { await POST('/notifications/read', { id: n.id }); } catch { /* ignore */ } bus.emit('change'); } if (n.link) location.hash = n.link; } },
       iconBadge(ic, col), h('div', { class: 'li-main' }, h('div', { class: 'li-title', style: { whiteSpace: 'normal', fontWeight: n.read_at ? 500 : 700 } }, n.title), n.body ? h('div', { class: 'li-sub', style: { whiteSpace: 'normal' } }, n.body) : null, h('div', { class: 'tiny dim' }, timeAgo(n.created_at))),
