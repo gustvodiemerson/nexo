@@ -402,6 +402,29 @@ test('forma de pagamento: grava, valida, filtra e edita', async () => {
   ok(await A.del('/api/transactions/' + id));
 });
 
+test('mover conta entre Pessoal e Casal, com histórico e categorias', async () => {
+  const mk = await A.post('/api/accounts', { scope: 'personal', name: 'Bradesco mover', type: 'checking', initial_cents: 10000 }); ok(mk, 201);
+  const acc = mk.data.account;
+  const Lp = (await A.get('/api/lookups?scope=personal')).data;
+  const cat = Lp.categories.find((c) => c.kind === 'expense' && !c.parent_id);
+  const t1 = await A.post('/api/transactions', { scope: 'personal', type: 'expense', account_id: acc.id, amount_cents: 1234, date: today, description: 'Mover teste', category_id: cat.id }); ok(t1, 201);
+  assert.equal((await B.get('/api/accounts?scope=couple')).data.accounts.some((a) => a.id === acc.id), false);
+  assert.equal((await B.post(`/api/accounts/${acc.id}/move`, { scope: 'couple' })).status, 404);
+  assert.equal((await A.post(`/api/accounts/${acc.id}/move`, { scope: 'personal' })).status, 400);
+  assert.equal((await A.post(`/api/accounts/${acc.id}/move`, { scope: 'xx' })).status, 400);
+  ok(await A.post(`/api/accounts/${acc.id}/move`, { scope: 'couple' }));
+  assert.ok((await B.get('/api/accounts?scope=couple')).data.accounts.some((a) => a.id === acc.id));
+  const tb = (await B.get('/api/transactions?scope=couple')).data.transactions.find((t) => t.description === 'Mover teste');
+  assert.ok(tb, 'parceiro vê o lançamento'); assert.equal(tb.scope, 'couple');
+  const Lc = (await A.get('/api/lookups?scope=couple')).data;
+  assert.ok(Lc.categories.some((c) => c.id === tb.category_id) || tb.category_id === null);
+  // parceiro lança na conta compartilhada; então não pode voltar a ser pessoal
+  const tp = await B.post('/api/transactions', { scope: 'couple', type: 'expense', account_id: acc.id, amount_cents: 500, date: today, description: 'Do parceiro' }); ok(tp, 201);
+  assert.equal((await B.post(`/api/accounts/${acc.id}/move`, { scope: 'personal' })).status, 403);
+  assert.equal((await A.post(`/api/accounts/${acc.id}/move`, { scope: 'personal' })).status, 409);
+  ok(await B.del('/api/transactions/' + tp.data.transaction.id)); ok(await A.del('/api/transactions/' + tb.id));
+});
+
 test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/ajustar saldo e isolamento', async () => {
   const ITEM = '11111111-2222-3333-4444-555555555555';
   assert.equal((await A.get('/api/bank')).data.configured, false);

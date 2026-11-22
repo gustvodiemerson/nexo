@@ -329,6 +329,12 @@ function accountSheet(a) {
       h('button', { class: 'btn block', type: 'button', onclick: () => { setMovFilter({ account_id: a.id, category_id: '', type: '', status: '', q: '', month: '' }); close(); location.hash = '#/movimentos'; } }, icon('list', 18), 'Ver movimentações'),
       a.type === 'card' && writable && h('button', { class: 'btn primary block', type: 'button', onclick: () => { close(); txForm({ type: 'transfer', scope: a.scope }); } }, icon('swap', 18), 'Pagar fatura (transferência)'),
       a.type !== 'card' && writable && !a.archived && h('button', { class: 'btn block', type: 'button', onclick: () => { close(); adjustBalanceSheet(a); } }, icon('edit', 18), 'Ajustar saldo ao valor real'),
+      writable && hasCouple() && S.me && a.user_id === S.me.id && h('button', { class: 'btn block', type: 'button', onclick: async () => {
+        const toCouple = a.scope !== 'couple';
+        if (!(await confirmDialog({ title: toCouple ? 'Compartilhar com o casal?' : 'Tornar esta conta só sua?',
+          text: toCouple ? 'Esta conta e todo o histórico dela passam a aparecer para vocês dois, em Casal.' : 'Esta conta e todo o histórico dela deixam de aparecer para seu parceiro(a).', confirm: toCouple ? 'Compartilhar' : 'Tornar pessoal' }))) return;
+        try { await POST('/accounts/' + a.id + '/move', { scope: toCouple ? 'couple' : 'personal' }); toast(toCouple ? 'Conta compartilhada com o casal' : 'Conta agora é pessoal'); bus.emit('change'); close(); } catch (e) { toast(errMsg(e), 'err'); }
+      } }, icon('heart', 18), a.scope === 'couple' ? 'Tornar pessoal' : 'Compartilhar com o casal'),
       writable && h('div', { class: 'row' },
         h('button', { class: 'btn grow', type: 'button', onclick: () => { close(); accountForm(a); } }, icon('edit', 18), 'Editar'),
         h('button', { class: 'btn grow', type: 'button', onclick: async () => { try { await PATCH('/accounts/' + a.id, { archived: !a.archived }); toast(a.archived ? 'Conta reativada' : 'Conta arquivada'); bus.emit('change'); close(); } catch (e) { toast(errMsg(e), 'err'); } } }, icon('download', 18), a.archived ? 'Reativar' : 'Arquivar')),

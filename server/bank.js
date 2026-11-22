@@ -8,8 +8,10 @@ import { brl } from './calc.js';
 const BACKFILL_DAYS = () => Math.min(365, Math.max(7, Number(process.env.BANK_BACKFILL_DAYS) || 90));
 const OVERLAP_DAYS = 10;
 
-async function categoryIndex(userId) {
-  const rows = await q.all("SELECT id, name, kind FROM categories WHERE scope='personal' AND user_id=? AND parent_id IS NULL", userId);
+async function categoryIndex(acc, userId) {
+  const rows = acc?.scope === 'couple'
+    ? await q.all("SELECT id, name, kind FROM categories WHERE scope='couple' AND couple_id=? AND parent_id IS NULL", acc.couple_id)
+    : await q.all("SELECT id, name, kind FROM categories WHERE scope='personal' AND user_id=? AND parent_id IS NULL", userId);
   const m = new Map();
   for (const r of rows) m.set(r.kind + ':' + r.name, r.id);
   return m;
@@ -60,16 +62,18 @@ export async function syncBankAccount(ctx, ba, { firstCalibrate = true } = {}) {
     }
     const from = first ? addDays(today, -BACKFILL_DAYS()) : addDays(ba.synced_to, -OVERLAP_DAYS);
     const list = (await pluggy.listTransactions(ba.pluggy_account_id, from, today)).map(pluggy.normalizeTx).filter(Boolean);
-    const cats = await categoryIndex(ctx.userId);
+    const acct = await q.get('SELECT scope, couple_id FROM accounts WHERE id=?', ba.account_id);
+    const sc = acct?.scope === 'couple' ? 'couple' : 'personal';
+    const cats = await categoryIndex(acct, ctx.userId);
     const fresh = [];
     if (list.length) {
       await tx(async () => {
         for (let i = 0; i < list.length; i += 80) {
           const chunk = list.slice(i, i + 80);
-          const ph = chunk.map(() => "('personal',?,NULL,?,?,?,?,'paid',?,?,?,?)").join(',');
+          const ph = chunk.map(() => "(?,?,?,?,?,?,?,'paid',?,?,?,?)").join(',');
           const params = chunk.flatMap((t) => {
             const cn = pluggy.guessCategoryName(t.description, t.type);
-            return [ctx.userId, ba.account_id, t.type, t.amount_cents, t.date, cn ? cats.get(t.type + ':' + cn) ?? null : null, t.description, t.external_id, pluggy.guessPaymentMethod(t.description, ba.kind)];
+            return [sc, ctx.userId, sc === 'couple' ? acct.couple_id : null, ba.account_id, t.type, t.amount_cents, t.date, cn ? cats.get(t.type + ':' + cn) ?? null : null, t.description, t.external_id, pluggy.guessPaymentMethod(t.description, ba.kind)];
           });
           const rows = await q.all(
             `INSERT INTO transactions(scope,user_id,couple_id,account_id,type,amount_cents,date,status,category_id,description,external_id,payment_method) VALUES ${ph}
@@ -84,8 +88,8 @@ export async function syncBankAccount(ctx, ba, { firstCalibrate = true } = {}) {
     let calibrated = null;
     if (first && firstCalibrate) calibrated = await calibrate(ba);
     if (imported) {
-      await audit(ctx, 'bank.sync', 'bank_account', ba.id, { imported }, 'personal');
-      await emitChange(ctx, 'personal', 'transactions');
+      await audit({ ...ctx, coupleId: acct?.couple_id }, 'bank.sync', 'bank_account', ba.id, { imported }, sc);
+      await emitChange({ ...ctx, coupleId: acct?.couple_id }, sc, 'transactions');
       if (!first) await tellImported(ctx, link, ba, fresh);
     }
     const chk = await balanceCheck(ba);

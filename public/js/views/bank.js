@@ -30,7 +30,7 @@ export function bankSheet() {
           l.last_error ? h('div', { class: 'small neg' }, l.last_error) : null,
           ...l.accounts.map((a) => h('div', { class: 'stack', style: { gap: '4px' } },
             h('div', { class: 'row' }, h('span', { class: 'grow' }, `${a.name} · ${KIND[a.kind]}`), a.bank_balance_cents != null && a.kind !== 'card' ? h('b', null, brl(a.bank_balance_cents)) : null),
-            h('div', { class: 'small muted' }, 'Importando para: ' + (a.account_name || '—')),
+            h('div', { class: 'small muted' }, 'Importando para: ' + (a.account_name || '—') + (a.account_name ? (a.account_scope === 'couple' ? ' (Casal)' : ' (Pessoal)') : '')),
             diffNote(a),
             a.diff_cents ? h('button', { class: 'btn sm', type: 'button', onclick: async (e) => {
               if (!(await confirmDialog({ title: 'Ajustar ao saldo do banco?', text: `O saldo inicial de "${a.account_name}" será corrigido em ${brl(a.diff_cents)} para o NEXO mostrar ${brl(a.bank_balance_cents)}. Nenhum lançamento é criado ou apagado.`, confirm: 'Ajustar' }))) return;

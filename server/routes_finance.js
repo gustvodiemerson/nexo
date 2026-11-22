@@ -6,7 +6,7 @@ import {
   parseScope, scopeSql, writeTarget, getOwned, getAccountFor, canRead, canWrite, audit, emitChange, notify, accountBalances,
 } from './core.js';
 import { balanceSummary, budgetStatus, pendingBills, checkBudgetAlerts, sums, brl } from './calc.js';
-import { coupleMemberIds } from './core.js';
+import { coupleMemberIds, emit } from './core.js';
 import { PAYMENT_METHODS } from './lib.js';
 const payMethod = (x) => (x === undefined || x === null || x === '' ? null : v.oneOf(x, PAYMENT_METHODS, { field: 'forma de pagamento' }));
 
@@ -82,6 +82,60 @@ patch('/api/accounts/:id', async (req) => {
     f.name, f.initial_cents, f.credit_limit_cents, f.closing_day, f.due_day, f.color, archived, row.id);
   await audit(ctx, 'account.update', 'account', row.id, { name: f.name, initial_cents: f.initial_cents, archived }, row.scope);
   await emitChange(ctx, row.scope, 'accounts');
+  return { account: await q.get('SELECT * FROM accounts WHERE id=?', row.id) };
+});
+
+// Mover uma conta entre Pessoal e Casal (com todo o histórico). Só quem criou a conta pode fazer isso.
+post('/api/accounts/:id/move', async (req) => {
+  const ctx = req.ctx;
+  const row = await getOwned('accounts', req.params.id, ctx, { write: true });
+  const to = v.oneOf(req.body.scope, ['personal', 'couple'], { field: 'ambiente' });
+  if (to === row.scope) throw bad('A conta já está neste ambiente.', 'scope');
+  if (row.user_id !== ctx.userId) throw forbidden('Só quem criou a conta pode mudar o ambiente dela.');
+  const target = writeTarget(ctx, to);
+  const linked = (await q.get(
+    `SELECT (SELECT COUNT(*) FROM transactions WHERE type='transfer' AND (account_id=? OR to_account_id=?))
+          + (SELECT COUNT(*) FROM vault_movements WHERE account_id=?)
+          + (SELECT COUNT(*) FROM investment_entries WHERE account_id=?) AS n`, row.id, row.id, row.id, row.id)).n;
+  if (linked > 0) throw new HttpError(409, 'Esta conta tem transferências, cofre ou investimentos ligados a outras contas. Para mudar o ambiente, apague ou refaça esses itens antes.');
+  if (to === 'personal') {
+    const others = (await q.get('SELECT COUNT(*) AS n FROM transactions WHERE account_id=? AND user_id<>?', row.id, ctx.userId)).n;
+    if (others > 0) throw new HttpError(409, 'Seu parceiro(a) também fez lançamentos nesta conta, então ela não pode voltar a ser só sua.');
+  }
+  const oldIds = row.scope === 'couple' ? await coupleMemberIds(row.couple_id) : [ctx.userId];
+  const catScope = to === 'couple' ? { sql: "scope='couple' AND couple_id=?", p: target.couple_id } : { sql: "scope='personal' AND user_id=?", p: ctx.userId };
+  const cache = new Map();
+  const remap = async (catId) => { // acha a categoria equivalente (mesmo nome/tipo) no novo ambiente
+    if (!catId) return null;
+    if (cache.has(catId)) return cache.get(catId);
+    const c = await q.get('SELECT name, kind, parent_id FROM categories WHERE id=?', catId);
+    let found = null;
+    if (c) {
+      if (c.parent_id) {
+        const par = await q.get('SELECT name FROM categories WHERE id=?', c.parent_id);
+        const np = par && await q.get(`SELECT id FROM categories WHERE ${catScope.sql} AND parent_id IS NULL AND name=? AND kind=?`, catScope.p, par.name, c.kind);
+        found = np ? (await q.get(`SELECT id FROM categories WHERE ${catScope.sql} AND parent_id=? AND name=?`, catScope.p, np.id, c.name))?.id ?? np.id : null;
+      } else found = (await q.get(`SELECT id FROM categories WHERE ${catScope.sql} AND parent_id IS NULL AND name=? AND kind=?`, catScope.p, c.name, c.kind))?.id ?? null;
+    }
+    cache.set(catId, found); return found;
+  };
+  await tx(async () => {
+    await q.run('UPDATE accounts SET scope=?, couple_id=? WHERE id=?', target.scope, target.couple_id, row.id);
+    for (const t of await q.all('SELECT DISTINCT category_id FROM transactions WHERE account_id=? AND category_id IS NOT NULL', row.id)) {
+      await q.run('UPDATE transactions SET category_id=? WHERE account_id=? AND category_id=?', await remap(t.category_id), row.id, t.category_id);
+    }
+    await q.run('UPDATE transactions SET scope=?, couple_id=? WHERE account_id=?', target.scope, target.couple_id, row.id);
+    for (const t of await q.all('SELECT DISTINCT category_id FROM recurring WHERE account_id=? AND category_id IS NOT NULL', row.id)) {
+      await q.run('UPDATE recurring SET category_id=? WHERE account_id=? AND category_id=?', await remap(t.category_id), row.id, t.category_id);
+    }
+    await q.run('UPDATE recurring SET scope=?, couple_id=? WHERE account_id=?', target.scope, target.couple_id, row.id);
+  });
+  await audit(ctx, 'account.move', 'account', row.id, { from: row.scope, to, name: row.name }, to);
+  await emit([...new Set([...oldIds, ...(to === 'couple' ? await coupleMemberIds(target.couple_id) : [])])], 'change', { scope: 'couple', what: 'accounts', by: ctx.userId });
+  await emitChange(ctx, 'personal', 'accounts');
+  if (to === 'couple') for (const uid of (await coupleMemberIds(target.couple_id)).filter((id) => id !== ctx.userId)) {
+    await notify(uid, { type: 'couple', title: `${ctx.user.name} compartilhou uma conta com o casal`, body: row.name, link: '#/contas' });
+  }
   return { account: await q.get('SELECT * FROM accounts WHERE id=?', row.id) };
 });
 

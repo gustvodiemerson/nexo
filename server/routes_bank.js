@@ -19,7 +19,7 @@ get('/api/bank', async (req) => {
   const ctx = req.ctx;
   const links = await q.all('SELECT id, connector, status, last_sync_at, last_error, created_at FROM bank_links WHERE user_id=? ORDER BY id', ctx.userId);
   const accs = await q.all(
-    `SELECT ba.*, a.name AS account_name FROM bank_accounts ba LEFT JOIN accounts a ON a.id=ba.account_id WHERE ba.user_id=? ORDER BY ba.id`, ctx.userId);
+    `SELECT ba.*, a.name AS account_name, a.scope AS account_scope FROM bank_accounts ba LEFT JOIN accounts a ON a.id=ba.account_id WHERE ba.user_id=? ORDER BY ba.id`, ctx.userId);
   const bal = await accountBalances(accs.map((a) => a.account_id).filter(Boolean));
   return {
     configured: pluggy.configured(),
