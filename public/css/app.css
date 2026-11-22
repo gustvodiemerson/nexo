@@ -257,6 +257,9 @@ input, select, textarea { font: inherit; color: inherit; }
 .group-date::first-letter { text-transform: uppercase; }
 .bubble-wrap { display: flex; flex-direction: column; gap: 6px; padding: 8px 0 12px; }
 .bubble { max-width: 82%; padding: 9px 13px; border-radius: 18px; background: rgba(255, 255, 255, .07); border: 1px solid var(--line); align-self: flex-start; word-wrap: break-word; overflow-wrap: anywhere; white-space: pre-wrap; }
+.chat-img { display: block; max-width: 100%; max-height: 300px; border-radius: 12px; margin-bottom: 2px; cursor: zoom-in; background: rgba(255,255,255,.06); min-height: 60px; }
+.bubble.pending { opacity: .7; }
+.bubble.failed { opacity: 1; border-color: var(--neg, #ff5470); cursor: pointer; }
 .bubble.me { align-self: flex-end; background: linear-gradient(135deg, rgba(255, 45, 149, .38), rgba(59, 130, 255, .38)); border-color: rgba(255, 255, 255, .18); }
 .bubble .meta { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--text-2); margin-top: 3px; justify-content: flex-end; white-space: normal; }
 .bubble .attach { margin: 4px 0; padding: 8px 10px; border-radius: 12px; background: rgba(5, 9, 30, .5); border: 1px solid var(--line-strong); white-space: normal; }

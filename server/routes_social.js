@@ -1,6 +1,6 @@
 // Chat do casal e notificações.
 import { q } from './db.js';
-import { get, post, del } from './router.js';
+import { get, post, del, Raw } from './router.js';
 import { v, bad, forbidden, notFound, rateLimit } from './lib.js';
 import { pollEvents, audit, emit, notify, coupleMemberIds, getOwned, canRead } from './core.js';
 import { brl, goalsWithProgress } from './calc.js';
@@ -38,15 +38,33 @@ get('/api/chat', async (req) => {
   return { messages: rows.map(mapMsg), partner, partner_last_read_id: partnerRead };
 });
 
+const IMG_RE = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/;
+get('/api/chat/images/:id', async (req) => {
+  const ctx = req.ctx; requireCouple(ctx);
+  const r = await q.get('SELECT mime, data FROM chat_images WHERE id=? AND couple_id=?', Number(req.params.id), ctx.coupleId);
+  if (!r) throw notFound();
+  return new Raw(Buffer.from(r.data, 'base64'), r.mime, { 'Cache-Control': 'private, max-age=31536000, immutable' });
+});
+
 post('/api/chat', async (req) => {
   const ctx = req.ctx; requireCouple(ctx);
   await rateLimit('chat:' + ctx.userId, 60, 60_000);
+  const clientId = req.body.client_id ? String(req.body.client_id).slice(0, 64) : null;
+  if (clientId) { // reenvio do mesmo envio (rede ruim/offline): devolve a mensagem já criada, sem duplicar
+    const dup = await q.get(`${MSG_SELECT} WHERE m.user_id=? AND m.client_id=?`, ctx.userId, clientId);
+    if (dup) return { message: mapMsg(dup), duplicate: true };
+  }
   let body = v.str(req.body.body, { field: 'mensagem', max: 2000, required: !req.body.attachment }) || '';
   let attachment = null;
   const at = req.body.attachment;
   if (at) {
-    const kind = v.oneOf(at.kind, ['transaction', 'goal'], { field: 'anexo' });
-    if (kind === 'transaction') {
+    const kind = v.oneOf(at.kind, ['transaction', 'goal', 'image'], { field: 'anexo' });
+    if (kind === 'image') {
+      const m = IMG_RE.exec(String(at.data || ''));
+      if (!m || m[2].length > 1_800_000) throw bad('Foto inválida ou grande demais.', 'attachment');
+      const id = Number((await q.run('INSERT INTO chat_images(couple_id,user_id,mime,data) VALUES (?,?,?,?)', ctx.coupleId, ctx.userId, 'image/' + m[1], m[2])).lastInsertRowid);
+      attachment = { kind, id };
+    } else if (kind === 'transaction') {
       const t = await getOwned('transactions', at.id, ctx);
       attachment = { kind, id: t.id, title: t.description, type: t.type, amount_cents: t.amount_cents, date: t.date, scope: t.scope };
     } else {
@@ -56,16 +74,21 @@ post('/api/chat', async (req) => {
     }
   }
   if (!body && !attachment) throw bad('Escreva uma mensagem.', 'body');
-  const id = Number((await q.run('INSERT INTO chat_messages(couple_id,user_id,body,attachment) VALUES (?,?,?,?)', ctx.coupleId, ctx.userId, body, attachment ? JSON.stringify(attachment) : null)).lastInsertRowid);
-  await q.run('INSERT INTO chat_reads(couple_id,user_id,last_read_id) VALUES (?,?,?) ON CONFLICT(couple_id,user_id) DO UPDATE SET last_read_id=excluded.last_read_id', ctx.coupleId, ctx.userId, id);
-  const msg = mapMsg(await q.get(`${MSG_SELECT} WHERE m.id=?`, id));
-  const members = await coupleMemberIds(ctx.coupleId);
+  const id = Number((await q.run('INSERT INTO chat_messages(couple_id,user_id,body,attachment,client_id) VALUES (?,?,?,?,?)', ctx.coupleId, ctx.userId, body, attachment ? JSON.stringify(attachment) : null, clientId)).lastInsertRowid);
+  const [, row, members] = await Promise.all([
+    q.run('INSERT INTO chat_reads(couple_id,user_id,last_read_id) VALUES (?,?,?) ON CONFLICT(couple_id,user_id) DO UPDATE SET last_read_id=excluded.last_read_id', ctx.coupleId, ctx.userId, id),
+    q.get(`${MSG_SELECT} WHERE m.id=?`, id),
+    coupleMemberIds(ctx.coupleId),
+  ]);
+  const msg = mapMsg(row);
   await emit(members, 'chat', { message: msg });
-  for (const uid of members.filter((x) => x !== ctx.userId)) {
-    const lastRead = (await q.get('SELECT last_read_id FROM chat_reads WHERE couple_id=? AND user_id=?', ctx.coupleId, uid))?.last_read_id || 0;
-    await notify(uid, { type: 'chat', title: `${req.user.name} enviou uma mensagem`, body: (body || 'Compartilhou um item').slice(0, 120), link: '#/chat', dedupe: `chat:${ctx.coupleId}:${lastRead}` });
-  }
-  await audit(ctx, 'chat.send', 'chat', id, { attachment: attachment?.kind || null }, 'couple');
+  await Promise.all([
+    ...members.filter((x) => x !== ctx.userId).map(async (uid) => {
+      const lastRead = (await q.get('SELECT last_read_id FROM chat_reads WHERE couple_id=? AND user_id=?', ctx.coupleId, uid))?.last_read_id || 0;
+      await notify(uid, { type: 'chat', title: `${req.user.name} enviou ${attachment?.kind === 'image' && !body ? 'uma foto' : 'uma mensagem'}`, body: (body || (attachment?.kind === 'image' ? '📷 Foto' : 'Compartilhou um item')).slice(0, 120), link: '#/chat', dedupe: `chat:${ctx.coupleId}:${lastRead}` });
+    }),
+    audit(ctx, 'chat.send', 'chat', id, { attachment: attachment?.kind || null }, 'couple'),
+  ]);
   req.status = 201;
   return { message: msg };
 });
@@ -85,6 +108,7 @@ del('/api/chat/:id', async (req) => {
   if (!m) throw notFound();
   if (m.user_id !== ctx.userId) throw forbidden('Você só pode apagar as próprias mensagens.');
   await q.run('DELETE FROM chat_messages WHERE id=?', m.id);
+  try { const at = m.attachment ? JSON.parse(m.attachment) : null; if (at?.kind === 'image') await q.run('DELETE FROM chat_images WHERE id=? AND couple_id=?', at.id, ctx.coupleId); } catch { /* ignora */ }
   await emit(await coupleMemberIds(ctx.coupleId), 'chat_delete', { id: m.id });
   return { ok: true };
 });

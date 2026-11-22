@@ -1,13 +1,19 @@
 // Chat do casal, assistente de IA e notificações.
 import {
   h, icon, S, GET, POST, DEL, qs, bus, toast, errMsg, busy, openSheet, confirmDialog, emptyState, skeleton, pageHead, backHead, iconBadge, avatar, seg, money, brl, pct, fmtDate, fmtTime, relDate,
-  timeAgo, richText, partnerOf, progressBar, firstName, scopeParam, sqlToDate, todayISO,
+  timeAgo, richText, partnerOf, progressBar, firstName, scopeParam, sqlToDate, todayISO, uid,
 } from '../ui.js';
-import { proposalCard, receiptFlow } from './capture.js';
+import { proposalCard, receiptFlow, compressImage } from './capture.js';
 import { pushCard } from './push.js';
 
 // ================= CHAT =================
+function viewImage(src) {
+  const ov = h('div', { style: { position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,.92)', display: 'flex', alignItems: 'center', justifyContent: 'center' }, onclick: () => ov.remove() },
+    h('img', { src, alt: 'Foto', style: { maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' } }));
+  document.body.append(ov);
+}
 function attachCard(a) {
+  if (a.kind === 'image') { const src = a.local || '/api/chat/images/' + a.id; return h('img', { class: 'chat-img', src, alt: 'Foto', loading: 'lazy', onclick: (e) => { e.stopPropagation(); viewImage(src); } }); }
   if (a.kind === 'goal') return h('a', { class: 'attach', href: '#/metas', style: { display: 'block', color: 'inherit' } }, h('div', { class: 'row small' }, icon('target', 15), h('strong', null, a.title)), progressBar(a.pct, null, 'grad'), h('div', { class: 'small muted' }, `${money(a.current_cents)} de ${money(a.target_cents)} (${pct(a.pct)})`));
   return h('a', { class: 'attach', href: '#/movimentos', style: { display: 'block', color: 'inherit' } }, h('div', { class: 'row small' }, icon(a.type === 'income' ? 'income' : a.type === 'transfer' ? 'swap' : 'expense', 15), h('strong', null, a.title)),
     h('div', { class: `num ${a.type === 'income' ? 'pos' : a.type === 'expense' ? 'neg' : ''}`, style: { fontWeight: 700 } }, money(a.amount_cents)), h('div', { class: 'small muted' }, `${fmtDate(a.date)} • ${a.scope === 'couple' ? 'Casal' : 'Pessoal'}`));
@@ -25,7 +31,7 @@ export async function chatView() {
   const ticks = () => wrap.querySelectorAll('.bubble.me').forEach((b) => { const t = b.querySelector('.tick'); if (t) t.textContent = Number(b.dataset.id) <= partnerRead ? '✓✓' : '✓'; });
   function bubble(m) {
     const me = m.user_id === S.me.id;
-    const el = h('div', { class: `bubble ${me ? 'me' : ''}`, dataset: { id: m.id }, onclick: me ? () => del(m) : undefined, title: me ? 'Toque para apagar' : undefined },
+    const el = h('div', { class: `bubble ${me ? 'me' : ''}`, dataset: { id: m.id }, onclick: me && typeof m.id === 'number' ? () => del(m) : undefined, title: me ? 'Toque para apagar' : undefined },
       m.body ? h('div', null, m.body) : null, m.attachment ? attachCard(m.attachment) : null,
       h('div', { class: 'meta' }, fmtTime(m.created_at), me ? h('span', { class: 'tick' }, m.id <= partnerRead ? '✓✓' : '✓') : null));
     return el;
@@ -48,13 +54,40 @@ export async function chatView() {
 
   const input = h('textarea', { class: 'input', rows: 1, placeholder: 'Mensagem…', maxLength: 2000, 'aria-label': 'Mensagem' });
   input.oninput = () => { input.style.height = 'auto'; input.style.height = Math.min(120, input.scrollHeight) + 'px'; };
-  let sending = false;
-  async function send(body, attachment) {
-    if (sending) return; sending = true;
-    try { await POST('/chat', { body, attachment }); input.value = ''; input.style.height = 'auto'; } catch (e) { toast(errMsg(e), 'err'); } finally { sending = false; }
+  // Envio otimista: a mensagem aparece na hora; se a rede falhar, fica marcada e pode ser reenviada com um toque (sem duplicar).
+  const pend = new Map();
+  function pendingBubble(p) {
+    const at = p.attachment?.kind === 'image' ? { kind: 'image', local: p.attachment.data } : p.attachment;
+    const tick = h('span', { class: 'tick' }, '🕓');
+    const el = h('div', { class: 'bubble me pending', dataset: { cid: p.cid } },
+      p.body ? h('div', null, p.body) : null, at ? attachCard(at) : null, h('div', { class: 'meta' }, tick));
+    p.el = el; p.tick = tick; return el;
   }
-  const form = h('form', { class: 'composer', onsubmit: (e) => { e.preventDefault(); const t = input.value.trim(); if (t) send(t); } },
-    h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Compartilhar movimentação ou meta', onclick: () => shareSheet(send) }, icon('paperclip', 20)), input,
+  async function deliver(p) {
+    p.tick.textContent = '🕓'; p.el.classList.remove('failed'); p.el.onclick = null;
+    try {
+      const r = await POST('/chat', { body: p.body, attachment: p.attachment, client_id: p.cid });
+      pend.delete(p.cid); p.el.remove();
+      add(r.message); bottom();
+    } catch (e) {
+      if (e.status && e.status !== 0 && e.status < 500 && e.status !== 429) { pend.delete(p.cid); p.el.remove(); toast(errMsg(e), 'err'); return; }
+      p.tick.textContent = '⚠ Toque para reenviar'; p.el.classList.add('failed'); p.el.onclick = () => deliver(p);
+    }
+  }
+  function send(body, attachment) {
+    const p = { cid: uid(), body: body || '', attachment: attachment || null };
+    pend.set(p.cid, p);
+    wrap.querySelector('p.muted')?.remove();
+    wrap.append(pendingBubble(p)); bottom();
+    deliver(p);
+  }
+  const photoInput = h('input', { type: 'file', accept: 'image/*', hidden: true, onchange: async (e) => {
+    const f = e.target.files && e.target.files[0]; e.target.value = ''; if (!f) return;
+    try { const data = await compressImage(f, { max: 1280, quality: 0.7, limit: 900_000 }); send('', { kind: 'image', data }); } catch (er) { toast(errMsg(er), 'err'); }
+  } });
+  const form = h('form', { class: 'composer', onsubmit: (e) => { e.preventDefault(); const t = input.value.trim(); if (t) { send(t); input.value = ''; input.style.height = 'auto'; } } },
+    h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Compartilhar movimentação ou meta', onclick: () => shareSheet(send) }, icon('paperclip', 20)),
+    h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Enviar foto', onclick: () => photoInput.click() }, icon('camera', 20)), photoInput, input,
     h('button', { class: 'btn primary', type: 'submit', 'aria-label': 'Enviar' }, icon('send', 20)));
   input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey && window.matchMedia('(min-width: 700px)').matches) { e.preventDefault(); form.requestSubmit(); } };
 

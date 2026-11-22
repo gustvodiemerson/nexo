@@ -270,6 +270,22 @@ test('chat do casal: mensagens, anexo, leitura e isolamento', async () => {
   assert.equal((await C.post('/api/chat', { body: 'invasor' })).status, 400);
 });
 
+test('chat: foto, envio sem duplicar (client_id) e acesso restrito ao casal', async () => {
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const r = await A.post('/api/chat', { body: '', client_id: 'cid-1', attachment: { kind: 'image', data: 'data:image/png;base64,' + png } }); ok(r, 201);
+  const m = r.data.message; assert.equal(m.attachment.kind, 'image');
+  const again = await A.post('/api/chat', { body: '', client_id: 'cid-1', attachment: { kind: 'image', data: 'data:image/png;base64,' + png } }); ok(again);
+  assert.equal(again.data.message.id, m.id); assert.equal(again.data.duplicate, true);
+  assert.equal((await A.post('/api/chat', { body: 'x', attachment: { kind: 'image', data: 'data:text/html;base64,AAAA' } })).status, 400);
+  const get = (c, id) => fetch(base + '/api/chat/images/' + id, { headers: { cookie: c.cookie } });
+  const g = await get(B, m.attachment.id); assert.equal(g.status, 200); assert.equal(g.headers.get('content-type'), 'image/png');
+  assert.equal(Buffer.from(await g.arrayBuffer()).toString('base64'), png);
+  assert.equal((await get(C, m.attachment.id)).status, 400); // sem casal
+  ok(await B.post('/api/chat/read'));
+  ok(await A.del('/api/chat/' + m.id));
+  assert.equal((await get(B, m.attachment.id)).status, 404);
+});
+
 test('assistente de IA: modo local usa apenas dados reais e respeita escopo', async () => {
   assert.equal((await A.get('/api/ai/status')).data.mode, 'local');
   const r = await A.post('/api/ai/chat', { scope: 'personal', message: 'Onde posso economizar?' }); ok(r);

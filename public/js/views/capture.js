@@ -73,7 +73,7 @@ export function proposalCard(items, { onDone } = {}) {
 }
 
 // ---------- nota fiscal ----------
-async function compressImage(file, { max = 1400, quality = 0.72, limit = 1_100_000 } = {}) {
+export async function compressImage(file, { max = 1400, quality = 0.72, limit = 1_100_000 } = {}) {
   let bmp;
   try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
   catch {
