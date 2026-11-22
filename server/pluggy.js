@@ -123,3 +123,15 @@ export function guessCategoryName(description, type) {
   for (const [t, name, re] of RULES) if (t === type && re.test(d)) return name;
   return null;
 }
+
+// Forma de pagamento provável (Pix, boleto, dinheiro…) a partir da descrição e do tipo de conta.
+export function guessPaymentMethod(description, kind) {
+  const d = plain(description);
+  if (/\bpix\b/.test(d)) return 'pix';
+  if (/boleto|pagto titulo|pagamento de titulo|convenio|fatura/.test(d)) return 'boleto';
+  if (/\bted\b|\bdoc\b|transferencia|transf /.test(d)) return 'transfer';
+  if (/saque|deposito em dinheiro/.test(d)) return 'cash';
+  if (kind === 'card') return 'credit';
+  if (/debito|compra no debito|compra cartao/.test(d)) return 'debit';
+  return null;
+}

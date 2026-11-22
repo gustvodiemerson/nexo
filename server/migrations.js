@@ -57,4 +57,22 @@ ALTER TABLE push_subscriptions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE push_prefs ENABLE ROW LEVEL SECURITY;
 `,
   },
+  {
+    version: 4, // forma de pagamento, chat com fotos e mensagens com id do cliente (envio sem duplicar)
+    sql: `
+ALTER TABLE transactions ADD COLUMN payment_method TEXT;
+ALTER TABLE chat_messages ADD COLUMN client_id TEXT;
+CREATE UNIQUE INDEX uq_chat_client ON chat_messages(user_id, client_id) WHERE client_id IS NOT NULL;
+CREATE TABLE chat_images (
+  id BIGSERIAL PRIMARY KEY,
+  couple_id BIGINT NOT NULL REFERENCES couples(id) ON DELETE CASCADE,
+  user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  mime TEXT NOT NULL,
+  data TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (to_char(now() at time zone 'utc','YYYY-MM-DD HH24:MI:SS'))
+);
+CREATE INDEX idx_chat_images_couple ON chat_images(couple_id);
+ALTER TABLE chat_images ENABLE ROW LEVEL SECURITY;
+`,
+  },
 ];

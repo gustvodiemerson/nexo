@@ -7,6 +7,8 @@ import {
 } from './core.js';
 import { balanceSummary, budgetStatus, pendingBills, checkBudgetAlerts, sums, brl } from './calc.js';
 import { coupleMemberIds } from './core.js';
+import { PAYMENT_METHODS } from './lib.js';
+const payMethod = (x) => (x === undefined || x === null || x === '' ? null : v.oneOf(x, PAYMENT_METHODS, { field: 'forma de pagamento' }));
 
 const COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const color = (c) => (typeof c === 'string' && COLOR_RE.test(c) ? c : null);
@@ -176,6 +178,7 @@ get('/api/transactions', async (req) => {
   if (Q.type) { where.push('t.type=?'); params.push(v.oneOf(Q.type, ['income', 'expense', 'transfer'], { field: 'tipo' })); }
   if (Q.status) { where.push('t.status=?'); params.push(v.oneOf(Q.status, ['paid', 'pending'], { field: 'status' })); }
   if (Q.account_id) { where.push('(t.account_id=? OR t.to_account_id=?)'); params.push(Number(Q.account_id), Number(Q.account_id)); }
+  if (Q.payment_method) { where.push('t.payment_method=?'); params.push(v.oneOf(Q.payment_method, PAYMENT_METHODS, { field: 'forma de pagamento' })); }
   if (Q.user_id) { where.push('t.user_id=?'); params.push(Number(Q.user_id)); }
   if (Q.category_id) {
     where.push('t.category_id IN (SELECT id FROM categories WHERE id=? OR parent_id=?)'); params.push(Number(Q.category_id), Number(Q.category_id));
@@ -230,6 +233,7 @@ post('/api/transactions', async (req) => {
   const notes = v.str(b.notes, { field: 'observações', max: 500, required: false });
   const status = type === 'transfer' ? 'paid' : v.oneOf(b.status, ['paid', 'pending'], { def: 'paid', field: 'situação' });
   const idem = b.idempotency_key ? v.str(b.idempotency_key, { field: 'chave', max: 100 }) : null;
+  const pm = type === 'transfer' ? null : payMethod(b.payment_method);
 
   if (idem) {
     const ex = await q.get('SELECT id FROM transactions WHERE user_id=? AND idempotency_key=?', ctx.userId, idem);
@@ -252,9 +256,9 @@ post('/api/transactions', async (req) => {
     firstId = await tx(async () => {
       const ins = async (o) => Number((await q.run(
         `INSERT INTO transactions(scope,user_id,couple_id,account_id,to_account_id,type,amount_cents,date,due_date,status,category_id,description,notes,
-           recurring_id,installment_group,installment_no,installment_total,idempotency_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           recurring_id,installment_group,installment_no,installment_total,idempotency_key,payment_method) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         target.scope, target.user_id, target.couple_id, account.id, toAccount?.id ?? null, type, o.amount, o.date, o.status === 'pending' ? o.date : null,
-        o.status, category?.id ?? null, o.description, notes, o.recurring_id ?? null, o.group ?? null, o.no ?? null, o.total ?? null, o.idem ?? null,
+        o.status, category?.id ?? null, o.description, notes, o.recurring_id ?? null, o.group ?? null, o.no ?? null, o.total ?? null, o.idem ?? null, pm,
       )).lastInsertRowid);
       if (installments > 1) {
         const group = uuid(), base = Math.floor(amount / installments), rest = amount - base * installments;
@@ -315,7 +319,7 @@ post('/api/transactions/bulk', async (req) => {
     if (account.scope !== scope) throw bad('A conta precisa pertencer ao mesmo ambiente (pessoal/casal) do lançamento.', 'account_id');
     rows.push({
       type, account, amount: v.cents(it.amount_cents), date: v.date(it.date), description: v.str(it.description, { field: 'descrição', max: 120 }),
-      status: v.oneOf(it.status, ['paid', 'pending'], { def: 'paid', field: 'situação' }), category: await getCategoryFor(ctx, it.category_id, scope, type), idem: `${batch}-${i}`,
+      status: v.oneOf(it.status, ['paid', 'pending'], { def: 'paid', field: 'situação' }), category: await getCategoryFor(ctx, it.category_id, scope, type), idem: `${batch}-${i}`, pm: payMethod(it.payment_method ?? b.payment_method),
     });
   }
   const ids = await tx(async () => {
@@ -323,9 +327,9 @@ post('/api/transactions/bulk', async (req) => {
     for (const r of rows) {
       out.push(Number((await q.run(
         `INSERT INTO transactions(scope,user_id,couple_id,account_id,to_account_id,type,amount_cents,date,due_date,status,category_id,description,notes,
-           recurring_id,installment_group,installment_no,installment_total,idempotency_key) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+           recurring_id,installment_group,installment_no,installment_total,idempotency_key,payment_method) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
         target.scope, target.user_id, target.couple_id, r.account.id, null, r.type, r.amount, r.date, r.status === 'pending' ? r.date : null,
-        r.status, r.category?.id ?? null, r.description, v.str(b.notes, { field: 'observações', max: 500, required: false }), null, null, null, null, r.idem,
+        r.status, r.category?.id ?? null, r.description, v.str(b.notes, { field: 'observações', max: 500, required: false }), null, null, null, null, r.idem, r.pm,
       )).lastInsertRowid));
     }
     return out;
@@ -351,6 +355,7 @@ patch('/api/transactions/:id', async (req) => {
     date: b.date !== undefined ? v.date(b.date) : row.date,
     status: row.type === 'transfer' ? 'paid' : b.status !== undefined ? v.oneOf(b.status, ['paid', 'pending'], { field: 'situação' }) : row.status,
     account_id: row.account_id, to_account_id: row.to_account_id, category_id: row.category_id,
+    payment_method: row.type === 'transfer' ? null : b.payment_method !== undefined ? payMethod(b.payment_method) : row.payment_method,
   };
   if (b.account_id !== undefined && Number(b.account_id) !== row.account_id) {
     const a = await getAccountFor(ctx, b.account_id); if (a.scope !== row.scope) throw bad('Conta inválida para este ambiente.', 'account_id'); f.account_id = a.id;
@@ -360,8 +365,8 @@ patch('/api/transactions/:id', async (req) => {
   }
   if (row.type === 'transfer' && f.account_id === f.to_account_id) throw bad('Escolha contas diferentes na transferência.');
   if (row.type !== 'transfer' && b.category_id !== undefined) f.category_id = (await getCategoryFor(ctx, b.category_id, row.scope, row.type))?.id ?? null;
-  await q.run(`UPDATE transactions SET description=?, notes=?, amount_cents=?, date=?, status=?, due_date=?, account_id=?, to_account_id=?, category_id=?, updated_at=datetime('now') WHERE id=?`,
-    f.description, f.notes, f.amount, f.date, f.status, f.status === 'pending' ? f.date : row.due_date, f.account_id, f.to_account_id, f.category_id, row.id);
+  await q.run(`UPDATE transactions SET description=?, notes=?, amount_cents=?, date=?, status=?, due_date=?, account_id=?, to_account_id=?, category_id=?, payment_method=?, updated_at=datetime('now') WHERE id=?`,
+    f.description, f.notes, f.amount, f.date, f.status, f.status === 'pending' ? f.date : row.due_date, f.account_id, f.to_account_id, f.category_id, f.payment_method, row.id);
   await audit(ctx, 'transaction.update', 'transaction', row.id, { before: { amount_cents: row.amount_cents, date: row.date, status: row.status }, after: { amount_cents: f.amount, date: f.date, status: f.status } }, row.scope);
   if (row.type === 'expense' && f.status === 'paid') await checkBudgetAlerts(ctx, row.scope, f.date, notify);
   await emitChange(ctx, row.scope, 'transactions');

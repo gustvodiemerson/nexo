@@ -66,13 +66,13 @@ export async function syncBankAccount(ctx, ba, { firstCalibrate = true } = {}) {
       await tx(async () => {
         for (let i = 0; i < list.length; i += 80) {
           const chunk = list.slice(i, i + 80);
-          const ph = chunk.map(() => "('personal',?,NULL,?,?,?,?,'paid',?,?,?)").join(',');
+          const ph = chunk.map(() => "('personal',?,NULL,?,?,?,?,'paid',?,?,?,?)").join(',');
           const params = chunk.flatMap((t) => {
             const cn = pluggy.guessCategoryName(t.description, t.type);
-            return [ctx.userId, ba.account_id, t.type, t.amount_cents, t.date, cn ? cats.get(t.type + ':' + cn) ?? null : null, t.description, t.external_id];
+            return [ctx.userId, ba.account_id, t.type, t.amount_cents, t.date, cn ? cats.get(t.type + ':' + cn) ?? null : null, t.description, t.external_id, pluggy.guessPaymentMethod(t.description, ba.kind)];
           });
           const rows = await q.all(
-            `INSERT INTO transactions(scope,user_id,couple_id,account_id,type,amount_cents,date,status,category_id,description,external_id) VALUES ${ph}
+            `INSERT INTO transactions(scope,user_id,couple_id,account_id,type,amount_cents,date,status,category_id,description,external_id,payment_method) VALUES ${ph}
              ON CONFLICT DO NOTHING RETURNING type, amount_cents, description, date`, ...params);
           fresh.push(...rows);
         }

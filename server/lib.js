@@ -133,3 +133,5 @@ export function verifyPassword(password, stored) {
   const buf = Buffer.from(hash, 'hex');
   return buf.length === test.length && crypto.timingSafeEqual(buf, test);
 }
+
+export const PAYMENT_METHODS = ['cash', 'pix', 'debit', 'credit', 'boleto', 'transfer', 'other'];

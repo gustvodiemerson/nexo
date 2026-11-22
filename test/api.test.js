@@ -387,6 +387,21 @@ test('notificações push: inscrição, preferências, chat, atividade do casal 
   ok(await A.post('/api/push/subscribe', { subscription: subOf('A') }), 201); // A volta a receber no teste dos bancos
 });
 
+test('forma de pagamento: grava, valida, filtra e edita', async () => {
+  const L = (await A.get('/api/lookups?scope=personal')).data;
+  const acc = L.accounts.find((a) => a.scope === 'personal' && a.type !== 'card');
+  const base = { scope: 'personal', type: 'expense', account_id: acc.id, amount_cents: 777, date: today, description: 'Teste forma de pagamento' };
+  const r = await A.post('/api/transactions', { ...base, payment_method: 'pix' }); ok(r, 201);
+  const id = r.data.transaction.id; assert.equal(r.data.transaction.payment_method, 'pix');
+  assert.equal((await A.post('/api/transactions', { ...base, description: 'x', payment_method: 'bitcoin' })).status, 400);
+  const f = await A.get('/api/transactions?scope=personal&payment_method=pix'); ok(f);
+  assert.ok(f.data.transactions.some((t) => t.id === id)); assert.ok(f.data.transactions.every((t) => t.payment_method === 'pix'));
+  assert.equal((await A.get('/api/transactions?scope=personal&payment_method=xyz')).status, 400);
+  const up = await A.patch('/api/transactions/' + id, { payment_method: 'cash' }); ok(up); assert.equal(up.data.transaction.payment_method, 'cash');
+  const nul = await A.patch('/api/transactions/' + id, { payment_method: null }); ok(nul); assert.equal(nul.data.transaction.payment_method, null);
+  ok(await A.del('/api/transactions/' + id));
+});
+
 test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/ajustar saldo e isolamento', async () => {
   const ITEM = '11111111-2222-3333-4444-555555555555';
   assert.equal((await A.get('/api/bank')).data.configured, false);

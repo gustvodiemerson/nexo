@@ -21,6 +21,9 @@ export function swatches(value, onPick) {
 }
 
 // ---------- linha de lançamento ----------
+export const PM_LABEL = { cash: 'Dinheiro', pix: 'Pix', debit: 'Débito', credit: 'Crédito', boleto: 'Boleto', transfer: 'Transferência', other: 'Outro' };
+const PM_OPTIONS = Object.entries(PM_LABEL).map(([v, l]) => ({ v, l }));
+
 export function txRow(t, { onclick } = {}) {
   const transfer = t.type === 'transfer';
   const col = transfer ? '#4cc9f0' : (t.category_color || (t.type === 'income' ? '#3ddc97' : '#8a93ad'));
@@ -29,7 +32,7 @@ export function txRow(t, { onclick } = {}) {
   const row = h('button', { class: 'list-item', type: 'button', onclick: onclick || (() => openTx(t.id)) },
     iconBadge(ic, col),
     h('div', { class: 'li-main' }, h('div', { class: 'li-title' }, t.description),
-      h('div', { class: 'li-sub' }, sub, t.scope === 'couple' && S.couple && t.user_name ? ` • ${firstName(t.user_name)}` : '')),
+      h('div', { class: 'li-sub' }, sub, t.payment_method && PM_LABEL[t.payment_method] ? ` • ${PM_LABEL[t.payment_method]}` : '', t.scope === 'couple' && S.couple && t.user_name ? ` • ${firstName(t.user_name)}` : '')),
     h('div', { class: 'li-end' }, h('div', { class: t.type === 'income' ? 'pos' : t.type === 'expense' ? 'neg' : '' }, signedMoney(t.amount_cents, t.type)),
       h('div', { class: 'li-sub' }, t.status === 'pending' ? h('span', { class: 'badge warn' }, 'Pendente · ', relDate(t.date)) : relDate(t.date))));
   return row;
@@ -45,6 +48,7 @@ export async function openTx(id) {
     const rows = [
       ['Data', fmtDate(t.date)], ['Situação', t.status === 'paid' ? (t.type === 'income' ? 'Recebido' : t.type === 'transfer' ? 'Concluída' : 'Pago') : 'Pendente'],
       [transfer ? 'Sai de' : 'Conta', t.account_name], transfer ? ['Vai para', t.to_account_name] : ['Categoria', t.parent_category_name ? `${t.parent_category_name} › ${t.category_name}` : (t.category_name || 'Sem categoria')],
+      t.payment_method && PM_LABEL[t.payment_method] ? ['Forma de pagamento', PM_LABEL[t.payment_method]] : null,
       ['Registrado por', t.user_name], t.installment_total ? ['Parcela', `${t.installment_no} de ${t.installment_total}`] : null, t.recurring_id ? ['Recorrência', 'Lançamento recorrente'] : null, t.notes ? ['Observações', t.notes] : null,
     ].filter(Boolean);
     const actions = h('div', { class: 'stack-sm' });
@@ -133,6 +137,9 @@ export async function txForm(opts = {}) {
     const auto = switchEl(false, null, 'Lançar como pago automaticamente');
     const notes = h('textarea', { class: 'textarea', maxLength: 500, placeholder: 'Opcional', value: editing?.notes || '' });
     const hint = h('div', { class: 'hint' });
+    let pmTouched = !!(editing && editing.payment_method);
+    const pmSel = select([{ v: '', l: 'Não informar' }, ...PM_OPTIONS], editing?.payment_method || ''); pmSel.addEventListener('change', () => { pmTouched = true; });
+    function suggestPm() { if (pmTouched || editing) return; const a = L.accounts.find((x) => String(x.id) === acc.value); pmSel.value = a && a.type === 'card' ? 'credit' : a && a.type === 'wallet' ? 'cash' : ''; }
     const err = formError();
     const btn = h('button', { class: `btn ${editing ? 'primary' : 'primary'} block`, type: 'submit' }, editing ? 'Salvar alterações' : 'Salvar');
 
@@ -146,16 +153,17 @@ export async function txForm(opts = {}) {
       pick(acc, keepA || first, first); if (!acc.value && list[0]) acc.value = list[0].id;
       const second = editing?.to_account_id ? String(editing.to_account_id) : (list.find((a) => String(a.id) !== acc.value) || {}).id;
       pick(acc2, keepB || second, second);
+      suggestPm();
     }
     function fillCats() {
       const keep = cat.value || (editing && editing.category_id ? String(editing.category_id) : '');
       const kind = type === 'income' ? 'income' : 'expense';
       const next = categorySelect(L, scope, kind, keep); next.id = cat.id; catWrap.replaceChildren(next); cat = next;
     }
-    const catField = field('Categoria', catWrap), toField = field('Vai para', acc2), accField = field('Conta', acc), statusField = field('Situação', statusSeg.el), instField = field('Parcelas', inst), recField = field('Repetir', rec), autoRow = h('div', { class: 'row between hidden' }, h('span', { class: 'muted' }, 'Lançar como pago automaticamente'), auto);
+    const pmField = field('Forma de pagamento', pmSel), catField = field('Categoria', catWrap), toField = field('Vai para', acc2), accField = field('Conta', acc), statusField = field('Situação', statusSeg.el), instField = field('Parcelas', inst), recField = field('Repetir', rec), autoRow = h('div', { class: 'row between hidden' }, h('span', { class: 'muted' }, 'Lançar como pago automaticamente'), auto);
     function syncType() {
       const tr = type === 'transfer';
-      toField.classList.toggle('hidden', !tr); catField.classList.toggle('hidden', tr); statusField.classList.toggle('hidden', tr);
+      toField.classList.toggle('hidden', !tr); catField.classList.toggle('hidden', tr); pmField.classList.toggle('hidden', tr); statusField.classList.toggle('hidden', tr);
       instField.classList.toggle('hidden', tr || !!editing); recField.classList.toggle('hidden', tr || !!editing);
       accField.querySelector('label').textContent = tr ? 'Sai de' : (type === 'income' ? 'Entra em' : 'Pago com');
       statusSeg.el.className = 'seg ' + (type === 'income' ? 'income' : 'expense');
@@ -171,6 +179,7 @@ export async function txForm(opts = {}) {
     }
     inst.oninput = syncRep; rec.onchange = syncRep; amount.input.addEventListener('input', syncRep); statusSeg.el.addEventListener('click', syncRep);
     fillAccounts(); syncType();
+    acc.addEventListener('change', suggestPm);
     acc.onchange = () => { if (type === 'transfer' && acc2.value === acc.value) { const o = [...acc2.options].find((x) => x.value !== acc.value); if (o) acc2.value = o.value; } };
 
     const form = h('form', { class: 'stack', novalidate: true, onsubmit: (e) => {
@@ -182,12 +191,12 @@ export async function txForm(opts = {}) {
         if (type === 'transfer' && (!acc2.value || acc2.value === acc.value)) throw new Error('Escolha duas contas diferentes.');
         if (editing) {
           const body = { description: desc.value, notes: notes.value || null, amount_cents: amount.get(), date: date.value, account_id: Number(acc.value), status: statusSeg.get() };
-          if (type === 'transfer') body.to_account_id = Number(acc2.value); else body.category_id = cat.value ? Number(cat.value) : null;
+          if (type === 'transfer') body.to_account_id = Number(acc2.value); else { body.category_id = cat.value ? Number(cat.value) : null; body.payment_method = pmSel.value || null; }
           await PATCH('/transactions/' + editing.id, body); toast('Lançamento atualizado');
         } else {
           const body = { scope, type, account_id: Number(acc.value), amount_cents: amount.get(), date: date.value, description: desc.value, notes: notes.value || undefined, idempotency_key: idem };
           if (type === 'transfer') body.to_account_id = Number(acc2.value);
-          else { body.status = statusSeg.get(); if (cat.value) body.category_id = Number(cat.value); if (Number(inst.value) > 1) body.installments = Number(inst.value); if (rec.value) body.recurrence = { frequency: rec.value, auto_paid: auto.checked }; }
+          else { body.status = statusSeg.get(); if (pmSel.value) body.payment_method = pmSel.value; if (cat.value) body.category_id = Number(cat.value); if (Number(inst.value) > 1) body.installments = Number(inst.value); if (rec.value) body.recurrence = { frequency: rec.value, auto_paid: auto.checked }; }
           const r = await POST('/transactions', body); toast(r.duplicate ? 'Este lançamento já havia sido registrado' : type === 'income' ? 'Receita registrada' : type === 'expense' ? 'Despesa registrada' : 'Transferência registrada');
         }
         bus.emit('change'); close();
@@ -195,14 +204,14 @@ export async function txForm(opts = {}) {
     } },
       !editing && typeSeg.el, !editing && h('button', { class: 'btn block', type: 'button', onclick: () => { close(); import('./capture.js').then((m) => m.receiptFlow()); } }, icon('camera', 18), 'Escanear nota fiscal'), editing && h('div', { class: 'row' }, h('span', { class: 'badge' }, TYPE_LABEL[type]), scopeBadge(scope)),
       scopeSeg && field('Onde registrar', scopeSeg.el, { hint: scope === 'couple' ? 'Visível para vocês dois.' : 'Só você vê.' }),
-      field('Valor', amount.el), field('Descrição', desc), field('Data', date), accField, toField, catField, statusField, instField, recField, autoRow, hint,
+      field('Valor', amount.el), field('Descrição', desc), field('Data', date), accField, pmField, toField, catField, statusField, instField, recField, autoRow, hint,
       field('Observações', notes), err, btn);
     return form;
   }, { noFocus: false });
 }
 
 // ---------- movimentações ----------
-const F = { month: todayISO().slice(0, 7), type: '', status: '', q: '', account_id: '', category_id: '', user_id: '' };
+const F = { month: todayISO().slice(0, 7), type: '', status: '', q: '', account_id: '', category_id: '', user_id: '', payment_method: '' };
 export function setMovFilter(o) { Object.assign(F, o); }
 
 export async function movimentosView() {
@@ -219,13 +228,13 @@ export async function movimentosView() {
     allBtn.classList.toggle('active', !F.month);
     const typeSeg = seg([{ v: '', l: 'Todas' }, { v: 'income', l: 'Receitas' }, { v: 'expense', l: 'Despesas' }, { v: 'transfer', l: 'Transf.' }], F.type, (v) => { F.type = v; load(true); }, 'sm');
     const pend = h('button', { class: 'chip' + (F.status === 'pending' ? ' active' : ''), type: 'button', onclick: () => { F.status = F.status === 'pending' ? '' : 'pending'; pend.classList.toggle('active', F.status === 'pending'); load(true); } }, icon('clock', 15), 'Pendentes');
-    const nf = ['account_id', 'category_id', 'user_id'].filter((k) => F[k]).length;
+    const nf = ['account_id', 'category_id', 'user_id', 'payment_method'].filter((k) => F[k]).length;
     const filterBtn = h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Mais filtros', onclick: () => filterSheet(L, scope, () => { root.replaceChildren(...render()); }) }, icon('filter', 20), nf ? h('span', { class: 'dot' }, nf) : null);
     drawMonth();
     async function load(reset) {
       if (reset) { offset = 0; list.replaceChildren(skeleton(4, 64)); }
       try {
-        const r = await GET('/transactions' + qs({ scope, from: F.month ? F.month + '-01' : '', to: F.month ? monthEndISO(F.month) : '', type: F.type, status: F.status, q: F.q, account_id: F.account_id, category_id: F.category_id, user_id: F.user_id, limit: LIMIT, offset }));
+        const r = await GET('/transactions' + qs({ scope, from: F.month ? F.month + '-01' : '', to: F.month ? monthEndISO(F.month) : '', type: F.type, status: F.status, q: F.q, account_id: F.account_id, category_id: F.category_id, user_id: F.user_id, payment_method: F.payment_method, limit: LIMIT, offset }));
         if (reset) { list.replaceChildren(); totals.replaceChildren(
           h('div', { class: 'card' }, h('div', { class: 'metric' }, h('span', { class: 'm-l' }, icon('income', 15), 'Receitas'), h('span', { class: 'm-v pos' }, money(r.totals.income_cents)))),
           h('div', { class: 'card' }, h('div', { class: 'metric' }, h('span', { class: 'm-l' }, icon('expense', 15), 'Despesas'), h('span', { class: 'm-v neg' }, money(r.totals.expense_cents)))),
@@ -269,9 +278,10 @@ function filterSheet(L, scope, done) {
     for (const r of (L?.categories || []).filter((c) => !c.parent_id && (scope === 'all' || c.scope === scope))) cat.append(h('option', { value: r.id }, `${r.name}${S.couple && scope === 'all' ? (r.scope === 'couple' ? ' (casal)' : ' (pessoal)') : ''}`));
     cat.value = F.category_id;
     const who = S.couple ? select([{ v: '', l: 'Todos' }, ...(L?.members || []).map((m) => ({ v: m.id, l: firstName(m.name) }))], F.user_id) : null;
-    return h('div', { class: 'stack' }, field('Conta', acc), field('Categoria (inclui subcategorias)', cat), who && field('Registrado por', who),
-      h('div', { class: 'row' }, h('button', { class: 'btn grow', type: 'button', onclick: () => { F.account_id = F.category_id = F.user_id = ''; close(); done(); } }, 'Limpar'),
-        h('button', { class: 'btn primary grow', type: 'button', onclick: () => { F.account_id = acc.value; F.category_id = cat.value; F.user_id = who ? who.value : ''; close(); done(); } }, 'Aplicar')));
+    const pm = select([{ v: '', l: 'Todas' }, ...PM_OPTIONS], F.payment_method);
+    return h('div', { class: 'stack' }, field('Conta', acc), field('Categoria (inclui subcategorias)', cat), field('Forma de pagamento', pm), who && field('Registrado por', who),
+      h('div', { class: 'row' }, h('button', { class: 'btn grow', type: 'button', onclick: () => { F.account_id = F.category_id = F.user_id = F.payment_method = ''; close(); done(); } }, 'Limpar'),
+        h('button', { class: 'btn primary grow', type: 'button', onclick: () => { F.account_id = acc.value; F.category_id = cat.value; F.user_id = who ? who.value : ''; F.payment_method = pm.value; close(); done(); } }, 'Aplicar')));
   });
 }
 
