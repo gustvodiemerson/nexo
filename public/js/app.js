@@ -178,11 +178,12 @@ function disconnectEvents() { polling = false; clearTimeout(pollTimer); pollTime
 // ---------- bancos: atualiza ao abrir o app e ao voltar para ele ----------
 let lastBank = 0;
 async function autoBankSync() {
-  if (!S.me || document.hidden || Date.now() - lastBank < 180_000) return;
+  if (!S.me || document.hidden || Date.now() - lastBank < 100_000) return;
   lastBank = Date.now();
   try { const r = await POST('/bank/auto-sync'); if (r && r.imported) { toast(`${r.imported} nova(s) movimentação(ões) do banco`); bus.emit('change'); } } catch { /* sem banco ou sem rede: ignora */ }
 }
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') autoBankSync(); });
+setInterval(autoBankSync, 120_000); // com o app aberto, confere o banco a cada ~2 min
 
 // ---------- sessão ----------
 bus.on('session', () => {

@@ -192,13 +192,13 @@ export function openSheet(title, build, opts = {}) {
   if (f && !opts.noFocus && window.matchMedia('(min-width: 700px)').matches) f.focus();
   return api_;
 }
-export function confirmDialog({ title = 'Confirmar', text = '', confirm = 'Confirmar', danger = false, extra } = {}) {
+export function confirmDialog({ title = 'Confirmar', text = '', confirm = 'Confirmar', cancel = 'Cancelar', danger = false, extra } = {}) {
   return new Promise((resolve) => {
     let answered = false;
     openSheet(title, (close) => h('div', { class: 'stack' },
       text && h('p', { class: 'muted' }, text), extra || null,
       h('div', { class: 'row', style: { marginTop: '6px' } },
-        h('button', { class: 'btn grow', type: 'button', onclick: () => { answered = true; close(); resolve(false); } }, 'Cancelar'),
+        h('button', { class: 'btn grow', type: 'button', onclick: () => { answered = true; close(); resolve(false); } }, cancel),
         h('button', { class: `btn grow ${danger ? 'danger' : 'primary'}`, type: 'button', onclick: () => { answered = true; close(); resolve(true); } }, confirm))),
     { onClose: () => { if (!answered) resolve(false); }, noFocus: true });
   });

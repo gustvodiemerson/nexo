@@ -1,6 +1,6 @@
 // Bancos conectados (Pluggy / Open Finance, somente leitura) e ajuste de saldo.
 import {
-  h, icon, GET, POST, DEL, bus, toast, errMsg, busy, formError, field, textInput, select, moneyInput, openSheet, confirmDialog, brl, timeAgo, iconBadge,
+  h, icon, GET, POST, DEL, bus, toast, errMsg, busy, formError, field, textInput, select, moneyInput, openSheet, confirmDialog, brl, timeAgo, iconBadge, S,
 } from '../ui.js';
 
 const KIND = { checking: 'Conta corrente', savings: 'Poupança', card: 'Cartão' };
@@ -46,9 +46,24 @@ export function bankSheet() {
               });
             } }, icon('repeat', 16), 'Atualizar agora'),
             h('button', { class: 'btn danger-ghost', type: 'button', onclick: async () => {
-              if (!(await confirmDialog({ title: 'Desconectar banco?', text: 'Os lançamentos já importados continuam no NEXO. Só deixam de chegar novos.', confirm: 'Desconectar', danger: true }))) return;
-              try { await DEL('/bank/links/' + l.id); toast('Banco desconectado'); bus.emit('change'); await load(); } catch (e2) { toast(errMsg(e2), 'err'); }
+              if (!(await confirmDialog({ title: 'Desconectar banco?', text: 'Param de chegar novos lançamentos deste banco.', confirm: 'Continuar', danger: true }))) return;
+              const purge = await confirmDialog({ title: 'Apagar também o que foi importado?', text: 'Apaga os lançamentos que vieram deste banco e as contas que ficarem vazias. Lançamentos feitos por você manualmente são mantidos.', confirm: 'Apagar tudo do banco', cancel: 'Manter lançamentos', danger: true });
+              try { const r = await DEL('/bank/links/' + l.id + (purge ? '?purge=1' : '')); toast(purge ? `Banco desconectado (${r.removed} lançamentos apagados)` : 'Banco desconectado'); bus.emit('change'); await load(); } catch (e2) { toast(errMsg(e2), 'err'); }
             } }, icon('trash', 16)))));
+      }
+      if (S.couple && r.links.some((l) => l.accounts.some((a) => a.account_scope === 'personal'))) {
+        kids.push(h('button', { class: 'btn block', type: 'button', onclick: async (e) => {
+          await busy(e.currentTarget, async () => {
+            try { const x = await POST('/bank/share-all'); toast(x.failed.length ? `${x.moved} compartilhada(s). Falhou: ${x.failed[0]}` : `${x.moved} conta(s) compartilhada(s) com o casal`, x.failed.length ? 'err' : 'ok'); bus.emit('change'); await load(); } catch (e2) { toast(errMsg(e2), 'err'); }
+          });
+        } }, icon('heart', 16), 'Compartilhar todas as contas do banco com o casal'));
+      }
+      if (r.links.length) {
+        let url = null; try { url = (await GET('/bank/webhook-url')).url; } catch { /* ignora */ }
+        if (url) kids.push(h('div', { class: 'card flat pad-sm stack' },
+          h('div', { style: { fontWeight: 600 } }, 'Aviso instantâneo (recomendado)'),
+          h('div', { class: 'small muted' }, 'No site do Pluggy: sua Aplicação → Webhooks → adicione esta URL, marcando os eventos "item/updated" e "transactions/created". Assim cada movimentação chega em segundos.'),
+          h('button', { class: 'btn sm', type: 'button', onclick: async () => { try { await navigator.clipboard.writeText(url); toast('URL copiada'); } catch { toast('Não consegui copiar', 'err'); } } }, icon('download', 16), 'Copiar URL do webhook')));
       }
       if (r.configured) kids.push(connectForm());
       box.replaceChildren(...kids);

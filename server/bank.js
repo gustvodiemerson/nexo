@@ -101,14 +101,14 @@ export async function syncBankAccount(ctx, ba, { firstCalibrate = true } = {}) {
 }
 
 const ago = (t) => (t ? Date.now() - new Date(String(t).replace(' ', 'T') + 'Z').getTime() : Infinity);
-const REFRESH_EVERY = 30 * 60_000; // pede ao Pluggy para buscar no banco, no máximo a cada 30 min por banco
+const REFRESH_EVERY = 100_000; // pede ao Pluggy para buscar no banco a cada ~2 min por banco (o Pluggy pode limitar por conta própria)
 
 // Atualiza os bancos de um usuário (ou de todos, se userId for nulo): pede atualização ao Pluggy de tempos em tempos
 // e importa o que houver de novo. Respeita um orçamento de tempo (funções serverless têm limite).
-export async function syncBanks({ userId = null, budgetMs = 8000, minAgeMs = 2 * 60_000, refresh = true } = {}) {
+export async function syncBanks({ userId = null, itemId = null, budgetMs = 8000, minAgeMs = 2 * 60_000, refresh = true } = {}) {
   if (!pluggy.configured()) return { imported: 0, links: 0 };
   const started = Date.now();
-  const links = await q.all(`SELECT * FROM bank_links ${userId ? 'WHERE user_id=?' : ''} ORDER BY last_sync_at NULLS FIRST`, ...(userId ? [userId] : []));
+  const links = await q.all(`SELECT * FROM bank_links ${userId ? 'WHERE user_id=?' : itemId ? 'WHERE item_id=?' : ''} ORDER BY last_sync_at NULLS FIRST`, ...(userId ? [userId] : itemId ? [itemId] : []));
   let imported = 0;
   for (const l of links) {
     if (Date.now() - started > budgetMs) break;
@@ -128,4 +128,4 @@ export async function syncBanks({ userId = null, budgetMs = 8000, minAgeMs = 2 *
   }
   return { imported, links: links.length };
 }
-export const syncAllBanks = (opts = {}) => syncBanks({ budgetMs: 20_000, minAgeMs: 8 * 60_000, ...opts });
+export const syncAllBanks = (opts = {}) => syncBanks({ budgetMs: 25_000, minAgeMs: 60_000, ...opts });

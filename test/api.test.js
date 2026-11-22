@@ -495,7 +495,7 @@ test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/aj
     const pv = await A.post('/api/bank/preview', { item_id: ITEM }); ok(pv);
     assert.equal(pv.data.connector, 'Banco do Brasil'); assert.equal(pv.data.accounts.length, 2);
     assert.deepEqual(pv.data.accounts.map((a) => [a.kind, a.balance_cents]), [['checking', 44811], ['card', 12050]]);
-    const link = await A.post('/api/bank/links', { item_id: ITEM, mappings: {} }); ok(link, 201);
+    const link = await A.post('/api/bank/links', { item_id: ITEM, mappings: {}, scope: 'personal' }); ok(link, 201);
     assert.equal(link.data.accounts.length, 2);
     assert.equal((await B.post('/api/bank/links', { item_id: ITEM, mappings: {} })).status, 409); // um Item ID só pode ter um dono
     const [cc, card] = link.data.accounts;
@@ -538,6 +538,19 @@ test('bancos (Pluggy): conectar, importar sem duplicar, categorizar, conferir/aj
     ok(await A.del(`/api/bank/links/${link.data.link_id}`));
     assert.equal((await A.get('/api/transactions?scope=personal')).data.count, n0);
     assert.deepEqual((await A.get('/api/bank')).data.links, []);
+    // novo vínculo: por padrão as contas vão para o Casal e o parceiro vê tudo; webhook importa na hora; apagar com purge limpa tudo
+    const l2 = await A.post('/api/bank/links', { item_id: ITEM, mappings: {} }); ok(l2, 201);
+    const bc = (await B.get('/api/accounts?scope=couple')).data.accounts; assert.ok(bc.some((a) => a.name.includes('Banco do Brasil')));
+    await A.post(`/api/bank/accounts/${l2.data.accounts[0].id}/sync`);
+    const nB = (await B.get('/api/transactions?scope=couple&limit=100')).data.transactions.filter((t) => t.description === 'MERCADO BOM PRECO').length; assert.equal(nB, 1);
+    state.extra.push({ id: 't7', description: 'LANCHONETE WEBHOOK', amount: -8, type: 'DEBIT', date: today + 'T00:00:00.000Z', status: 'POSTED' });
+    const wurl = (await A.get('/api/bank/webhook-url')).data.url;
+    assert.equal((await A.post('/api/bank/webhook?token=errado', { event: 'item/updated', itemId: ITEM })).status, 403);
+    ok(await A.post(new URL(wurl).pathname + new URL(wurl).search, { event: 'item/updated', itemId: ITEM }));
+    assert.ok((await B.get('/api/transactions?scope=couple&limit=100')).data.transactions.some((t) => t.description === 'LANCHONETE WEBHOOK'), 'webhook importou na hora');
+    const pg = await A.del(`/api/bank/links/${l2.data.link_id}?purge=1`); ok(pg); assert.ok(pg.data.removed >= 5);
+    assert.equal((await B.get('/api/accounts?scope=couple')).data.accounts.some((a) => a.name.includes('Banco do Brasil')), false);
+    assert.equal((await B.get('/api/transactions?scope=couple&limit=100')).data.transactions.some((t) => t.description === 'LANCHONETE WEBHOOK'), false);
   } finally {
     mock.close(); delete process.env.PLUGGY_CLIENT_ID; delete process.env.PLUGGY_CLIENT_SECRET; delete process.env.PLUGGY_BASE_URL;
   }

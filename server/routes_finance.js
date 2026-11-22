@@ -86,10 +86,9 @@ patch('/api/accounts/:id', async (req) => {
 });
 
 // Mover uma conta entre Pessoal e Casal (com todo o histórico). Só quem criou a conta pode fazer isso.
-post('/api/accounts/:id/move', async (req) => {
-  const ctx = req.ctx;
-  const row = await getOwned('accounts', req.params.id, ctx, { write: true });
-  const to = v.oneOf(req.body.scope, ['personal', 'couple'], { field: 'ambiente' });
+export async function moveAccount(ctx, id, scope) {
+  const row = await getOwned('accounts', id, ctx, { write: true });
+  const to = v.oneOf(scope, ['personal', 'couple'], { field: 'ambiente' });
   if (to === row.scope) throw bad('A conta já está neste ambiente.', 'scope');
   if (row.user_id !== ctx.userId) throw forbidden('Só quem criou a conta pode mudar o ambiente dela.');
   const target = writeTarget(ctx, to);
@@ -137,7 +136,9 @@ post('/api/accounts/:id/move', async (req) => {
     await notify(uid, { type: 'couple', title: `${ctx.user.name} compartilhou uma conta com o casal`, body: row.name, link: '#/contas' });
   }
   return { account: await q.get('SELECT * FROM accounts WHERE id=?', row.id) };
-});
+}
+post('/api/accounts/:id/move', async (req) => await moveAccount(req.ctx, req.params.id, req.body.scope));
+
 
 del('/api/accounts/:id', async (req) => {
   const ctx = req.ctx;

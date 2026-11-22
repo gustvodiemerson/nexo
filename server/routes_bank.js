@@ -2,7 +2,9 @@
 import { q, tx } from './db.js';
 import { get, post, del } from './router.js';
 import { v, bad, notFound, HttpError } from './lib.js';
-import { getOwned, accountBalances, audit, emitChange } from './core.js';
+import { getOwned, accountBalances, audit, emitChange, coupleMemberIds } from './core.js';
+import { moveAccount } from './routes_finance.js';
+import { timingSafeEqual, randomBytes } from 'node:crypto';
 import * as pluggy from './pluggy.js';
 import { syncBankAccount, calibrate, balanceCheck, syncBanks } from './bank.js';
 
@@ -28,7 +30,7 @@ get('/api/bank', async (req) => {
       accounts: accs.filter((a) => a.link_id === l.id).map((a) => {
         const nexo = a.account_id ? bal.get(a.account_id) ?? 0 : null;
         return {
-          id: a.id, name: a.name, kind: a.kind, account_id: a.account_id, account_name: a.account_name, bank_balance_cents: a.bank_balance_cents, balance_at: a.balance_at,
+          id: a.id, name: a.name, kind: a.kind, account_id: a.account_id, account_name: a.account_name, account_scope: a.account_scope, bank_balance_cents: a.bank_balance_cents, balance_at: a.balance_at,
           nexo_balance_cents: nexo, diff_cents: a.kind === 'card' || a.bank_balance_cents == null || nexo == null ? null : a.bank_balance_cents - nexo, synced_to: a.synced_to,
         };
       }),
@@ -45,7 +47,7 @@ post('/api/bank/preview', async (req) => {
   const accounts = (await pluggy.listAccounts(id)).map((a) => ({
     pluggy_id: String(a.id), name: String(a.name || a.marketingName || 'Conta').slice(0, 60), kind: pluggy.kindOf(a), balance_cents: pluggy.cents(a.balance),
   }));
-  const mine = await q.all("SELECT id, name, type FROM accounts WHERE scope='personal' AND user_id=? AND archived=0 ORDER BY id", ctx.userId);
+  const mine = await q.all("SELECT id, name, type FROM accounts WHERE user_id=? AND archived=0 ORDER BY id", ctx.userId);
   return { connector: item?.connector?.name || 'Banco', status: item?.status || null, accounts, my_accounts: mine };
 });
 
@@ -58,6 +60,7 @@ post('/api/bank/links', async (req) => {
   const connector = String(item?.connector?.name || 'Banco').slice(0, 40);
   const remote = await pluggy.listAccounts(id);
   if (!remote.length) throw bad('Nenhuma conta encontrada neste Item ID.');
+  const wantScope = req.body.scope === 'personal' ? 'personal' : (ctx.coupleId && ctx.canEditCouple ? 'couple' : 'personal'); // padrão: Casal, para o parceiro(a) ver tudo
   const maps = req.body.mappings && typeof req.body.mappings === 'object' ? req.body.mappings : {};
   const used = new Set();
   const out = await tx(async () => {
@@ -71,7 +74,7 @@ post('/api/bank/links', async (req) => {
       let accountId;
       if (choice !== undefined && choice !== null && choice !== '') {
         const acc = await getOwned('accounts', choice, ctx, { write: true });
-        if (acc.scope !== 'personal' || acc.user_id !== ctx.userId) throw bad('Escolha uma conta pessoal sua.');
+        if (acc.user_id !== ctx.userId) throw bad('Escolha uma conta criada por você.');
         if ((acc.type === 'card') !== (kind === 'card')) throw bad(kind === 'card' ? 'Um cartão do banco precisa ir para uma conta do tipo cartão.' : 'Uma conta do banco não pode ser ligada a um cartão.');
         if (used.has(acc.id)) throw bad('Duas contas do banco não podem usar a mesma conta do NEXO.');
         accountId = acc.id;
@@ -79,7 +82,7 @@ post('/api/bank/links', async (req) => {
         const label = `${connector} • ${name}`.slice(0, 40);
         const accRow = await q.run(
           'INSERT INTO accounts(scope,user_id,couple_id,name,type,initial_cents,color) VALUES (?,?,?,?,?,?,?)',
-          'personal', ctx.userId, null, label, kind, 0, kind === 'card' ? '#ff5d8f' : '#4cc9f0');
+          wantScope, ctx.userId, wantScope === 'couple' ? ctx.coupleId : null, label, kind, 0, kind === 'card' ? '#ff5d8f' : '#4cc9f0');
         accountId = Number(accRow.lastInsertRowid);
       }
       used.add(accountId);
@@ -91,8 +94,9 @@ post('/api/bank/links', async (req) => {
     if (!created.length) throw bad('Selecione ao menos uma conta para importar.');
     return linkId;
   });
-  await audit(ctx, 'bank.link', 'bank_link', out, { connector }, 'personal');
+  await audit(ctx, 'bank.link', 'bank_link', out, { connector }, wantScope);
   await emitChange(ctx, 'personal', 'accounts');
+  if (wantScope === 'couple') await emitChange(ctx, 'couple', 'accounts');
   req.status = 201;
   const accounts = await q.all('SELECT id, name, kind FROM bank_accounts WHERE link_id=? ORDER BY id', out);
   return { link_id: out, accounts };
@@ -126,14 +130,56 @@ post('/api/bank/accounts/:id/calibrate', async (req) => {
   return { delta_cents: delta, ...(await balanceCheck(ba)) };
 });
 
-// Desconecta o banco. Os lançamentos já importados continuam no NEXO.
+// Desconecta o banco. Com ?purge=1 também apaga os lançamentos importados e as contas que ficarem vazias.
 del('/api/bank/links/:id', async (req) => {
   const l = await q.get('SELECT * FROM bank_links WHERE id=? AND user_id=?', Number(req.params.id), req.ctx.userId);
   if (!l) throw notFound();
-  await q.run('DELETE FROM bank_links WHERE id=?', l.id);
-  await audit(req.ctx, 'bank.unlink', 'bank_link', l.id, { connector: l.connector }, 'personal');
-  return { ok: true };
+  const purge = req.query.purge === '1';
+  const ids = (await q.all('SELECT account_id FROM bank_accounts WHERE link_id=? AND account_id IS NOT NULL', l.id)).map((r) => r.account_id);
+  let removed = 0, accounts = 0;
+  await tx(async () => {
+    if (purge) for (const id of ids) removed += (await q.run('DELETE FROM transactions WHERE account_id=? AND external_id IS NOT NULL', id)).changes || 0;
+    await q.run('DELETE FROM bank_links WHERE id=?', l.id);
+  });
+  if (purge) for (const id of ids) { // remove a conta só se não sobrou nada ligado a ela
+    try { await tx(async () => { await q.run('DELETE FROM accounts WHERE id=?', id); }); accounts++; } catch { /* tem lançamentos manuais: mantém */ }
+  }
+  await audit(req.ctx, 'bank.unlink', 'bank_link', l.id, { connector: l.connector, purge, removed }, 'personal');
+  await emitChange(req.ctx, 'personal', 'accounts');
+  await emitChange(req.ctx, 'couple', 'accounts');
+  return { ok: true, removed, accounts };
 });
+
+// Compartilha com o casal todas as contas ligadas a bancos (as que já foram importadas como pessoais).
+post('/api/bank/share-all', async (req) => {
+  const ctx = req.ctx;
+  const rows = await q.all(`SELECT DISTINCT a.id, a.name FROM bank_accounts ba JOIN accounts a ON a.id=ba.account_id WHERE ba.user_id=? AND a.scope='personal'`, ctx.userId);
+  let moved = 0; const failed = [];
+  for (const r of rows) {
+    try { await moveAccount(ctx, r.id, 'couple'); moved++; } catch (e) { failed.push(`${r.name}: ${e.message}`); }
+  }
+  return { moved, failed };
+});
+
+// Aviso instantâneo do Pluggy (webhook): cadastre a URL em Pluggy → Aplicação → Webhooks. O token na URL impede chamadas de terceiros.
+async function webhookToken() {
+  let r = await q.get("SELECT value FROM app_settings WHERE key='bank_webhook'");
+  if (!r) { await q.run("INSERT OR IGNORE INTO app_settings(key,value) VALUES ('bank_webhook', ?)", randomBytes(24).toString('hex')); r = await q.get("SELECT value FROM app_settings WHERE key='bank_webhook'"); }
+  return r.value;
+}
+post('/api/bank/webhook', async (req) => {
+  const tok = Buffer.from(String(req.query.token || '')), real = Buffer.from(await webhookToken());
+  if (tok.length !== real.length || !timingSafeEqual(tok, real)) throw new HttpError(403, 'Token inválido.');
+  const item = String(req.body?.itemId || req.body?.item?.id || '').toLowerCase();
+  const ev = String(req.body?.event || '');
+  if (item && /^(item\/|transactions\/)/.test(ev) && !/error|login/.test(ev)) {
+    const run = syncBanks({ itemId: item, budgetMs: 8000, minAgeMs: 0, refresh: false }).catch((e) => console.error('[webhook]', e.message));
+    const defer = globalThis.__nexoWaitUntil;
+    if (typeof defer === 'function') defer(run); else await run;
+  }
+  return { ok: true };
+}, { auth: false });
+get('/api/bank/webhook-url', async (req) => ({ url: `${req.url.origin}/api/bank/webhook?token=${await webhookToken()}` }));
 
 // Ajuste manual: informa o saldo real e o app recalcula o saldo inicial (contas que não usam banco conectado).
 post('/api/accounts/:id/adjust-balance', async (req) => {
