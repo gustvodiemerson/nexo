@@ -1,6 +1,6 @@
 // Service worker do NEXO: casca do app em cache (rápido e funciona offline para abrir); a API nunca é cacheada.
-const VERSION = 'nexo-v3';
-const SHELL = ['/', '/css/app.css', '/js/app.js', '/js/ui.js', '/js/icons.js', '/js/charts.js', '/manifest.webmanifest', '/icons/icon.svg', '/img/hero.svg'];
+const VERSION = 'nexo-v4';
+const SHELL = ['/', '/css/app.css', '/js/app.js', '/js/ui.js', '/js/icons.js', '/js/charts.js', '/js/views/auth.js', '/js/views/bank.js', '/js/views/capture.js', '/js/views/home.js', '/js/views/money.js', '/js/views/push.js', '/js/views/reports.js', '/js/views/save.js', '/js/views/settings.js', '/js/views/social.js', '/icons/icon-192.png', '/manifest.webmanifest', '/icons/icon.svg', '/img/hero.svg'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL).catch(() => {})).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', (e) => {

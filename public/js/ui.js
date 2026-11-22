@@ -100,6 +100,59 @@ export function coupleTitle() {
 
 // ---------- API ----------
 export class ApiError extends Error { constructor(msg, status, field) { super(msg); this.status = status; this.field = field; } }
+// ---------- offline: cópia local das telas já vistas e fila de lançamentos para enviar quando voltar a internet ----------
+const NO_CACHE = /^\/(events|auth|bank|push|ai|chat\/images)/;
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } };
+const lsDel = (k) => { try { localStorage.removeItem(k); } catch { /* ignora */ } };
+const ckey = (path) => `nexo:c:${S.me ? S.me.id : 0}:${path}`;
+function cachePut(path, data) {
+  if (!S.me || NO_CACHE.test(path)) return;
+  let txt; try { txt = JSON.stringify(data); } catch { return; }
+  if (txt.length > 500_000) return;
+  const idxKey = `nexo:ci:${S.me.id}`;
+  let idx = []; try { idx = JSON.parse(lsGet(idxKey) || '[]'); } catch { idx = []; }
+  idx = idx.filter((x) => x !== path); idx.push(path);
+  while (idx.length > 40) lsDel(ckey(idx.shift()));
+  if (!lsSet(ckey(path), txt)) { for (const old of idx.splice(0, 10)) lsDel(ckey(old)); lsSet(ckey(path), txt); }
+  lsSet(idxKey, JSON.stringify(idx));
+}
+export function clearOfflineData() { try { for (const k of Object.keys(localStorage)) if (k.startsWith('nexo:c:') || k.startsWith('nexo:ci:') || k.startsWith('nexo:ob:')) localStorage.removeItem(k); } catch { /* ignora */ } }
+let offlineNow = false;
+function setOffline(v) {
+  if (v === offlineNow) return; offlineNow = v;
+  document.documentElement.classList.toggle('is-offline', v); bus.emit('offline', v);
+}
+export const isOffline = () => offlineNow;
+const obKey = () => `nexo:ob:${S.me ? S.me.id : 0}`;
+export const outboxList = () => { try { return JSON.parse(lsGet(obKey()) || '[]'); } catch { return []; } };
+const outboxSave = (l) => { lsSet(obKey(), JSON.stringify(l)); bus.emit('outbox', l.length); };
+let flushing = false;
+export async function flushOutbox() {
+  if (flushing || !S.me) return 0;
+  let list = outboxList(); if (!list.length) return 0;
+  flushing = true; let sent = 0;
+  try {
+    for (const it of list) {
+      let res;
+      try { res = await fetch('/api' + it.path, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(it.body) }); }
+      catch { setOffline(true); break; } // continua sem internet: tenta depois
+      setOffline(false);
+      if (res.ok) sent++;
+      else if (res.status === 401) break;
+      else if (res.status >= 500 || res.status === 429) break;
+      else { let m = ''; try { m = (await res.json()).error; } catch { /* ignora */ } toast('Um lançamento salvo offline foi recusado: ' + (m || res.status), 'err'); }
+      list = outboxList().filter((x) => x.id !== it.id); outboxSave(list);
+    }
+  } finally { flushing = false; }
+  if (sent) { toast(`${sent} lançamento(s) salvo(s) offline enviado(s)`); bus.emit('change'); }
+  return sent;
+}
+window.addEventListener('online', () => { setOffline(false); flushOutbox(); });
+window.addEventListener('offline', () => setOffline(true));
+if (navigator.onLine === false) setOffline(true);
+setInterval(() => { if (outboxList().length) flushOutbox(); }, 30_000);
+
 export async function api(method, path, body) {
   let res;
   try {
@@ -108,7 +161,16 @@ export async function api(method, path, body) {
       headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-  } catch { throw new ApiError('Sem conexão com o servidor. Verifique sua internet e tente de novo.', 0); }
+  } catch {
+    setOffline(true);
+    if (method === 'GET' && S.me) { const c = lsGet(ckey(path)); if (c) { try { return JSON.parse(c); } catch { /* segue para o erro */ } } }
+    if (method === 'POST' && path === '/transactions' && body && body.idempotency_key && S.me) { // salva no aparelho e envia quando voltar a internet
+      const list = outboxList(); list.push({ id: body.idempotency_key, path, body }); outboxSave(list);
+      return { queued: true, transaction: null };
+    }
+    throw new ApiError(method === 'GET' ? 'Sem internet e esta tela ainda não foi aberta neste aparelho.' : 'Sem conexão com o servidor. Verifique sua internet e tente de novo.', 0);
+  }
+  setOffline(false);
   let data = null;
   const ct = res.headers.get('content-type') || '';
   if (ct.includes('json')) { try { data = await res.json(); } catch { data = null; } }
@@ -116,6 +178,7 @@ export async function api(method, path, body) {
     if (res.status === 401 && !path.startsWith('/auth/')) bus.emit('unauthorized');
     throw new ApiError((data && data.error) || `Erro ${res.status}`, res.status, data && data.field);
   }
+  if (method === 'GET' && data) cachePut(path, data);
   return data;
 }
 export const GET = (p) => api('GET', p);

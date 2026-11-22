@@ -310,3 +310,6 @@ input, select, textarea { font: inherit; color: inherit; }
 .popup-bd { font-size: 13px; color: var(--text-2); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .popup-now { flex: none; font-size: 11px; color: var(--text-2); align-self: flex-start; }
 @keyframes popin { from { opacity: 0; transform: translate(-50%, -30px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
+.offline-bar { position: fixed; left: 0; right: 0; bottom: calc(var(--nav-h, 64px) + var(--safe-b, 0px)); z-index: 150; padding: 6px 12px; text-align: center; font-size: 12px; font-weight: 600; background: #5b3b00; color: #ffd78a; border-top: 1px solid rgba(255, 200, 87, .4); }
+.offline-bar[hidden] { display: none; }

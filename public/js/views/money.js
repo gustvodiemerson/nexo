@@ -197,7 +197,7 @@ export async function txForm(opts = {}) {
           const body = { scope, type, account_id: Number(acc.value), amount_cents: amount.get(), date: date.value, description: desc.value, notes: notes.value || undefined, idempotency_key: idem };
           if (type === 'transfer') body.to_account_id = Number(acc2.value);
           else { body.status = statusSeg.get(); if (pmSel.value) body.payment_method = pmSel.value; if (cat.value) body.category_id = Number(cat.value); if (Number(inst.value) > 1) body.installments = Number(inst.value); if (rec.value) body.recurrence = { frequency: rec.value, auto_paid: auto.checked }; }
-          const r = await POST('/transactions', body); toast(r.duplicate ? 'Este lançamento já havia sido registrado' : type === 'income' ? 'Receita registrada' : type === 'expense' ? 'Despesa registrada' : 'Transferência registrada');
+          const r = await POST('/transactions', body); toast(r.queued ? 'Sem internet: salvo no aparelho, será enviado quando voltar a conexão' : r.duplicate ? 'Este lançamento já havia sido registrado' : type === 'income' ? 'Receita registrada' : type === 'expense' ? 'Despesa registrada' : 'Transferência registrada');
         }
         bus.emit('change'); close();
       }, err);

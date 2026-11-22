@@ -99,7 +99,9 @@ export async function chatView() {
     bus.on('chat_read', (d) => { if (d.user_id !== S.me.id) { partnerRead = d.last_read_id; ticks(); } }),
     bus.on('chat_delete', ({ id }) => { ids.delete(id); wrap.querySelector(`.bubble[data-id="${id}"]`)?.remove(); }),
   ];
-  root._dispose = () => offs.forEach((o) => o());
+  const retryAll = () => { for (const p of pend.values()) if (p.el.classList.contains('failed')) deliver(p); };
+  window.addEventListener('online', retryAll);
+  root._dispose = () => { offs.forEach((o) => o()); window.removeEventListener('online', retryAll); };
   setTimeout(bottom, 30); markRead();
   return root;
 }

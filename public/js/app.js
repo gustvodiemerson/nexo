@@ -1,6 +1,6 @@
 // NEXO — casca do aplicativo: roteador, navegação, eventos em tempo real e inicialização.
 import {
-  h, icon, S, bus, GET, POST, $, clear, toast, popup, errMsg, setSession, closeAllSheets, openSheet, brandEl, topActions, skeleton, errorState, debounce, avatar, iconBadge, store,
+  h, icon, S, bus, GET, POST, $, clear, toast, popup, errMsg, setSession, clearOfflineData, flushOutbox, outboxList, isOffline, closeAllSheets, openSheet, brandEl, topActions, skeleton, errorState, debounce, avatar, iconBadge, store,
 } from './ui.js';
 
 // Rotas: carregadas sob demanda. `live` = a tela cuida das próprias atualizações; `public` = acessível sem login; `guest` = só para visitantes.
@@ -80,7 +80,7 @@ function paintCounters() {
 }
 bus.on('counters', paintCounters);
 async function refreshCounters() { try { S.counters = await GET('/counters'); paintCounters(); } catch { /* silencioso */ } }
-async function refreshMe() { try { const me = await GET('/auth/me'); S.me = me.user; S.couple = me.couple; } catch { /* silencioso */ } }
+async function refreshMe() { try { const me = await GET('/auth/me'); S.me = me.user; S.couple = me.couple; try { localStorage.setItem('nexo:me', JSON.stringify(me)); } catch { /* ignora */ } } catch { /* silencioso */ } }
 
 // ---------- roteamento ----------
 async function route() {
@@ -200,6 +200,8 @@ bus.on('session', () => {
 export async function logout() {
   try { await POST('/auth/logout'); } catch { /* ignore */ }
   S.counters = { notifications: 0, chat: 0 };
+  try { localStorage.removeItem('nexo:me'); } catch { /* ignora */ }
+  clearOfflineData();
   setSession(null);
 }
 window.nexoLogout = logout;
@@ -208,7 +210,7 @@ bus.on('unauthorized', () => { if (S.me) { toast('Sua sessão expirou. Entre nov
 // ---------- PWA ----------
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); S.installPrompt = e; bus.emit('install'); });
 window.addEventListener('appinstalled', () => { S.installPrompt = null; toast('NEXO instalado!'); bus.emit('install'); });
-window.addEventListener('offline', () => toast('Você está offline. Algumas ações não funcionarão.', 'err'));
+window.addEventListener('offline', () => toast('Você está offline. Dá para ver telas já abertas e registrar lançamentos.', 'err'));
 window.addEventListener('online', () => { toast('Conexão restabelecida.'); bus.emit('change'); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.me) { refreshCounters(); refreshView(); } });
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
@@ -218,6 +220,24 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 
 // ---------- início ----------
 (async function boot() {
-  try { const me = await GET('/auth/me'); S.me = me.user; S.couple = me.couple; } catch (e) { S.me = null; if (e && e.status === 0) toast(errMsg(e), 'err'); }
+  try { const me = await GET('/auth/me'); S.me = me.user; S.couple = me.couple; try { localStorage.setItem('nexo:me', JSON.stringify(me)); } catch { /* ignora */ } }
+  catch (e) {
+    S.me = null;
+    if (e && e.status === 0) { // sem internet ao abrir: usa os dados do último acesso neste aparelho
+      let me = null; try { me = JSON.parse(localStorage.getItem('nexo:me') || 'null'); } catch { /* ignora */ }
+      if (me && me.user) { S.me = me.user; S.couple = me.couple; } else toast(errMsg(e), 'err');
+    }
+  }
   bus.emit('session');
 })();
+
+// ---------- faixa "sem internet" e fila de envio ----------
+const offBar = document.createElement('div');
+offBar.className = 'offline-bar'; offBar.hidden = true; offBar.setAttribute('role', 'status');
+document.body.append(offBar);
+function drawOffBar() {
+  const n = outboxList().length;
+  offBar.hidden = !(isOffline() || n);
+  offBar.textContent = isOffline() ? `Sem internet — mostrando dados salvos${n ? ` · ${n} lançamento(s) aguardando envio` : ''}` : `Enviando ${n} lançamento(s) salvo(s) offline…`;
+}
+bus.on('offline', drawOffBar); bus.on('outbox', drawOffBar); bus.on('session', () => { drawOffBar(); if (S.me) flushOutbox(); });
