@@ -1,5 +1,5 @@
 // Service worker do NEXO: casca do app em cache (rápido e funciona offline para abrir); a API nunca é cacheada.
-const VERSION = 'nexo-v2';
+const VERSION = 'nexo-v3';
 const SHELL = ['/', '/css/app.css', '/js/app.js', '/js/ui.js', '/js/icons.js', '/js/charts.js', '/manifest.webmanifest', '/icons/icon.svg', '/img/hero.svg'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL).catch(() => {})).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => { e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== VERSION).map((k) => caches.delete(k)))).then(() => self.clients.claim())); });
@@ -17,9 +17,16 @@ self.addEventListener('fetch', (e) => {
 self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { body: e.data && e.data.text() }; }
-  e.waitUntil(self.registration.showNotification(d.title || 'NEXO', {
-    body: d.body || '', icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', tag: d.tag || 'nexo', renotify: true, data: { link: d.link || '#/notificacoes' },
-  }));
+  e.waitUntil((async () => {
+    // App aberto e visível: mostra o pop-up dentro do app (como o WhatsApp) em vez da notificação do sistema.
+    const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const seen = cs.filter((c) => c.visibilityState === 'visible' && c.focused);
+    if (seen.length) { seen.forEach((c) => c.postMessage({ type: 'nexo-push', title: d.title, body: d.body, link: d.link, type2: d.tag })); return; }
+    await self.registration.showNotification(d.title || 'NEXO', {
+      body: d.body || '', icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', tag: d.tag || 'nexo', renotify: true,
+      vibrate: [120, 60, 120], requireInteraction: false, data: { link: d.link || '#/notificacoes' },
+    });
+  })());
 });
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();

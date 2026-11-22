@@ -138,6 +138,27 @@ export function toast(msg, type = 'ok') {
   box.append(el);
   setTimeout(() => { el.classList.add('fade-out'); setTimeout(() => el.remove(), 320); }, type === 'err' ? 5000 : 2600);
 }
+// Pop-up de aviso no topo da tela (estilo WhatsApp): toque abre, desliza para cima fecha, some sozinho.
+const POP_ICON = { chat: 'chat', bank: 'bank', budget: 'alert', goal: 'target', vault: 'vault', couple: 'heart', activity: 'heart', due: 'bell', recurring: 'bell' };
+let popEl = null, popKey = '', popAt = 0;
+export function popup({ title, body, link, type }) {
+  const key = (title || '') + '|' + (body || '');
+  if (key === popKey && Date.now() - popAt < 30000) return; // o mesmo aviso chega por dois caminhos (push e consulta periódica)
+  popKey = key; popAt = Date.now();
+  popEl?.remove();
+  let timer;
+  const close = () => { clearTimeout(timer); if (!el.isConnected) return; el.classList.add('out'); setTimeout(() => el.remove(), 250); };
+  const el = h('div', { class: 'popup', role: 'alert', onclick: () => { close(); if (link && /^#\//.test(link)) location.hash = link; } },
+    h('div', { class: 'popup-ic' }, icon(POP_ICON[type] || 'bell', 20)),
+    h('div', { class: 'popup-tx' }, h('div', { class: 'popup-ti' }, title || 'NEXO'), body ? h('div', { class: 'popup-bd' }, body) : null),
+    h('div', { class: 'popup-now' }, 'agora'));
+  let y0 = null;
+  el.addEventListener('touchstart', (e) => { y0 = e.touches[0].clientY; }, { passive: true });
+  el.addEventListener('touchmove', (e) => { if (y0 !== null && e.touches[0].clientY - y0 < -24) { y0 = null; close(); } }, { passive: true });
+  popEl = el; document.body.append(el);
+  timer = setTimeout(close, 6500);
+  try { navigator.vibrate && navigator.vibrate([90, 50, 90]); } catch { /* ignora */ }
+}
 export const errMsg = (e) => (e && e.message) || 'Algo deu errado. Tente novamente.';
 
 // ---------- folhas (modais) ----------

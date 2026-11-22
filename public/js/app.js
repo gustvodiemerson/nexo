@@ -1,6 +1,6 @@
 // NEXO — casca do aplicativo: roteador, navegação, eventos em tempo real e inicialização.
 import {
-  h, icon, S, bus, GET, POST, $, clear, toast, errMsg, setSession, closeAllSheets, openSheet, brandEl, topActions, skeleton, errorState, debounce, avatar, iconBadge, store,
+  h, icon, S, bus, GET, POST, $, clear, toast, popup, errMsg, setSession, closeAllSheets, openSheet, brandEl, topActions, skeleton, errorState, debounce, avatar, iconBadge, store,
 } from './ui.js';
 
 // Rotas: carregadas sob demanda. `live` = a tela cuida das próprias atualizações; `public` = acessível sem login; `guest` = só para visitantes.
@@ -149,7 +149,7 @@ function dispatchEvent(ev) {
   else if (ev.type === 'notification') {
     refreshCounters();
     if (d.type === 'chat' && currentRoute && currentRoute.p === '/chat') return;
-    toast(d.title + (d.body ? ` — ${d.body}` : ''));
+    popup({ title: d.title, body: d.body, link: d.link, type: d.type });
   }
   else if (ev.type === 'chat') { bus.emit('chat', d); if (!(currentRoute && currentRoute.p === '/chat')) refreshCounters(); }
   else if (ev.type === 'chat_read') bus.emit('chat_read', d);
@@ -212,7 +212,7 @@ window.addEventListener('online', () => { toast('Conexão restabelecida.'); bus.
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.me) { refreshCounters(); refreshView(); } });
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
-  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'nexo-open' && S.me && /^#\//.test(e.data.link || '')) location.hash = e.data.link; });
+  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.type === 'nexo-push' && S.me) { refreshCounters(); if (!(e.data.type2 === 'chat' && currentRoute && currentRoute.p === '/chat')) popup({ ...e.data, type: e.data.type2 }); } if (e.data && e.data.type === 'nexo-open' && S.me && /^#\//.test(e.data.link || '')) location.hash = e.data.link; });
 }
 
 // ---------- início ----------
