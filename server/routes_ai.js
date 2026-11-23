@@ -34,11 +34,11 @@ del('/api/ai/history', async (req) => {
 post('/api/ai/receipt', async (req) => {
   const ctx = req.ctx;
   await rateLimit('rcpt:' + ctx.userId, 20, 3600_000);
-  const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/.exec(String(req.body.image || ''));
-  if (!m) throw bad('Envie uma foto em JPEG, PNG ou WebP.', 'image');
-  if (m[2].length > 1_600_000) throw bad('A foto ficou grande demais. Tente de novo com menos zoom.', 'image');
+  const m = /^data:((?:image\/(?:jpeg|png|webp))|application\/pdf);base64,([A-Za-z0-9+/=]+)$/.exec(String(req.body.image || ''));
+  if (!m) throw bad('Envie uma foto (JPEG, PNG, WebP) ou um PDF.', 'image');
+  if (m[2].length > (m[1] === 'application/pdf' ? 2_000_000 : 1_600_000)) throw bad(m[1] === 'application/pdf' ? 'O PDF é grande demais (máx. ~1,4 MB). Tire um print ou foto do comprovante.' : 'A foto ficou grande demais. Tente de novo com menos zoom.', 'image');
   const r = await readReceipt(ctx, { mime: m[1], b64: m[2] });
-  if (r.unavailable) throw new HttpError(503, 'Para ler notas fiscais é preciso ligar uma IA com visão no servidor (ex.: GEMINI_API_KEY, que tem plano gratuito). Você ainda pode registrar manualmente.');
+  if (r.unavailable) throw new HttpError(503, m[1] === 'application/pdf' ? 'Para ler PDF é preciso a GEMINI_API_KEY no servidor. Envie como foto ou print.' : 'Para ler notas fiscais é preciso ligar uma IA com visão no servidor (ex.: GEMINI_API_KEY, que tem plano gratuito). Você ainda pode registrar manualmente.');
   if (r.failed) throw new HttpError(502, 'A IA não conseguiu ler a nota agora. Tente de novo com a foto mais nítida e bem enquadrada.');
   await audit(ctx, 'ai.receipt', 'ai', null, { provider: r.provider, items: r.items.length }, 'personal');
   return { receipt: r };

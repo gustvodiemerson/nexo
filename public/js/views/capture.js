@@ -90,10 +90,11 @@ export async function compressImage(file, { max = 1400, quality = 0.72, limit = 
 }
 
 export function receiptFlow() {
-  openSheet('Nota fiscal por foto', (close) => {
+  openSheet('Ler nota ou comprovante', (close) => {
     const body = h('div', { class: 'stack' });
     const camInput = h('input', { type: 'file', accept: 'image/*', capture: 'environment', hidden: true });
     const galInput = h('input', { type: 'file', accept: 'image/*', hidden: true });
+    const pdfInput = h('input', { type: 'file', accept: 'application/pdf,image/*', hidden: true });
 
     async function start() {
       body.replaceChildren(h('p', { class: 'muted center' }, 'Carregando…'));
@@ -104,19 +105,25 @@ export function receiptFlow() {
         return;
       }
       body.replaceChildren(
-        h('p', { class: 'muted center' }, 'Fotografe a nota ou o cupom fiscal, bem enquadrado e com boa luz. O Nexo lê os itens e valores e você confere antes de registrar.'),
+        h('p', { class: 'muted center' }, 'Fotografe a nota fiscal ou envie um comprovante de pagamento (foto, print ou PDF). O Nexo lê os valores e você confere antes de registrar.'),
         h('button', { class: 'btn primary block', type: 'button', onclick: () => camInput.click() }, icon('camera', 18), 'Tirar foto'),
         h('button', { class: 'btn block', type: 'button', onclick: () => galInput.click() }, icon('upload', 18), 'Escolher da galeria'),
+        h('button', { class: 'btn block', type: 'button', onclick: () => pdfInput.click() }, icon('upload', 18), 'Enviar PDF ou arquivo do comprovante'),
         h('p', { class: 'tiny dim center' }, 'A foto é enviada só para a leitura e não fica guardada.'));
     }
 
     async function onFile(file) {
       if (!file) return;
+      const isPdf = file.type === 'application/pdf' || /\.pdf$/i.test(file.name || '');
       const prev = URL.createObjectURL(file);
-      body.replaceChildren(h('img', { src: prev, alt: 'Nota fiscal', style: { maxHeight: '220px', objectFit: 'contain', borderRadius: '14px', alignSelf: 'center' } }),
+      body.replaceChildren(isPdf ? h('div', { class: 'center', style: { fontSize: '40px' } }, '📄') : h('img', { src: prev, alt: 'Nota fiscal', style: { maxHeight: '220px', objectFit: 'contain', borderRadius: '14px', alignSelf: 'center' } }),
         h('div', { class: 'typing', style: { alignSelf: 'center' } }, h('i'), h('i'), h('i')), h('p', { class: 'muted center' }, 'Lendo a nota…'));
       try {
-        const image = await compressImage(file);
+        let image;
+        if (isPdf) {
+          if (file.size > 1_400_000) throw new Error('O PDF é grande demais (máx. ~1,4 MB). Tire um print ou foto do comprovante.');
+          image = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).replace(/^data:[^;]*;/, 'data:application/pdf;')); fr.onerror = () => rej(new Error('Não consegui ler o arquivo.')); fr.readAsDataURL(file); });
+        } else image = await compressImage(file);
         const r = await POST('/ai/receipt', { image });
         URL.revokeObjectURL(prev);
         review(r.receipt);
@@ -127,6 +134,7 @@ export function receiptFlow() {
     }
     camInput.onchange = () => { const f = camInput.files[0]; camInput.value = ''; onFile(f); };
     galInput.onchange = () => { const f = galInput.files[0]; galInput.value = ''; onFile(f); };
+    pdfInput.onchange = () => { const f = pdfInput.files[0]; pdfInput.value = ''; onFile(f); };
 
     async function review(rc) {
       if (!rc.readable) {
@@ -193,6 +201,6 @@ export function receiptFlow() {
     }
 
     start();
-    return h('div', { class: 'stack' }, camInput, galInput, body);
+    return h('div', { class: 'stack' }, camInput, galInput, pdfInput, body);
   }, { noFocus: true });
 }

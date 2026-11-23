@@ -230,15 +230,16 @@ export async function answer(ctx, scope, question, history) {
 }
 
 // ---------- leitura de nota fiscal (visão) ----------
-const RECEIPT_SYSTEM = `Você lê fotos de notas fiscais, cupons fiscais e recibos brasileiros. Extraia SOMENTE o que está legível na imagem; nunca invente itens ou valores.
+const RECEIPT_SYSTEM = `Você lê fotos ou PDFs de notas fiscais, cupons fiscais, recibos e comprovantes de pagamento brasileiros (Pix, transferência, TED, boleto, cartão). Extraia SOMENTE o que está legível na imagem; nunca invente itens ou valores.
 Responda apenas com JSON puro (sem crases, sem texto fora do JSON) neste formato:
 {"legivel":true,"loja":"nome do estabelecimento ou null","data":"YYYY-MM-DD ou null","total":valor total pago em reais (número) ou null,"itens":[{"descricao":"nome curto do item","valor":valor total da linha em reais (quantidade x preço unitário),"categoria":"uma das categorias informadas ou null"}]}
-Regras: valores com ponto decimal (12.5); descontos não viram item (use o valor já com desconto da linha, se houver); ignore subtotal, troco, impostos e formas de pagamento; se a imagem não for uma nota/cupom ou estiver ilegível, responda {"legivel":false,"itens":[]}. Junte itens repetidos idênticos em uma linha somando o valor. Máximo 40 itens.`;
+Regras: em comprovante de pagamento/Pix/transferência/boleto, use "loja" = quem recebeu (nome do recebedor/beneficiário), "data" = data do pagamento, "total" = valor pago e UM único item com descricao curta (ex.: "Pix para Fulano" ou "Boleto Energia") e esse mesmo valor; valores com ponto decimal (12.5); descontos não viram item (use o valor já com desconto da linha, se houver); ignore subtotal, troco, impostos e formas de pagamento; se a imagem não for uma nota/cupom ou estiver ilegível, responda {"legivel":false,"itens":[]}. Junte itens repetidos idênticos em uma linha somando o valor. Máximo 40 itens.`;
 
 export function visionProviders() { return providerOrder().filter((p) => PROVIDERS[p].vision); }
 
 export async function readReceipt(ctx, image, today = todayISO()) {
-  const order = visionProviders();
+  // PDF só é aceito por provedores que leem PDF direto (Gemini)
+  const order = visionProviders().filter((p) => image.mime !== 'application/pdf' || p === 'gemini');
   if (!order.length) return { unavailable: true };
   const cs = scopeSql(ctx, 'all');
   const cats = (await q.all(`SELECT DISTINCT name FROM categories WHERE ${cs.sql} AND kind='expense' ORDER BY name`, ...cs.params)).map((c) => c.name);
