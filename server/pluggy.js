@@ -48,17 +48,22 @@ function failure(path, r) {
 }
 
 // Pede ao Pluggy que busque dados novos no banco (melhor esforço) e espera um pouco o resultado.
+// Devolve também o que o Pluggy respondeu e quando os dados dele foram atualizados pela última vez (para diagnóstico).
 export async function refreshItem(id, waitMs = 6000) {
   let r = await raw('PATCH', '/items/' + encodeURIComponent(id), { body: {}, key: await apiKey() });
   if (r.status === 401 || r.status === 403) r = await raw('PATCH', '/items/' + encodeURIComponent(id), { body: {}, key: await apiKey(true) });
-  if (r.status < 200 || r.status >= 300) { console.error('[pluggy] refresh', r.status, JSON.stringify(r.data)?.slice(0, 200)); return { ok: false, status: r.data?.status || null, message: r.data?.message || null }; }
-  let status = r.data?.status || 'UPDATING';
+  if (r.status < 200 || r.status >= 300) {
+    console.error('[pluggy] refresh', r.status, JSON.stringify(r.data)?.slice(0, 200));
+    let it = null; try { it = await getItem(id); } catch { /* ignora */ }
+    return { ok: false, http: r.status, status: it?.status || r.data?.status || null, message: String(r.data?.message || '').slice(0, 140) || null, updated_at: it?.lastUpdatedAt || null, execution: it?.executionStatus || null };
+  }
+  let item = r.data || {}; let status = item.status || 'UPDATING';
   const end = Date.now() + waitMs;
   while (status === 'UPDATING' && Date.now() < end) {
     await new Promise((res) => setTimeout(res, 1200));
-    try { status = (await getItem(id))?.status || status; } catch { break; }
+    try { item = (await getItem(id)) || item; status = item.status || status; } catch { break; }
   }
-  return { ok: true, status };
+  return { ok: true, status, message: null, updated_at: item.lastUpdatedAt || null, execution: item.executionStatus || null };
 }
 export const getItem = (id) => api('/items/' + encodeURIComponent(id));
 export async function listAccounts(itemId) { const d = await api('/accounts', { itemId }); return d?.results || []; }
@@ -69,7 +74,7 @@ export async function listTransactions(accountId, from, to) {
   const out = [];
   let after = null, ok = true;
   for (let i = 0; i < 12; i++) {
-    const d = await api('/v2/transactions', { accountId, dateFrom: from, dateTo: to, after }, { soft: true });
+    const d = await api('/v2/transactions', { accountId, dateFrom: from, dateTo: to, after, pageSize: 500 }, { soft: true });
     if (d.failed) { ok = false; console.error('[pluggy] v2 falhou', d.failed.status, JSON.stringify(d.failed.data)?.slice(0, 200)); break; }
     out.push(...(d.results || []));
     const next = d.next ? String(d.next) : null;

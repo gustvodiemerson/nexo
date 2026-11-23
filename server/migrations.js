@@ -75,4 +75,11 @@ CREATE INDEX idx_chat_images_couple ON chat_images(couple_id);
 ALTER TABLE chat_images ENABLE ROW LEVEL SECURITY;
 `,
   },
+  {
+    version: 5, // diagnóstico da atualização do banco (o que o Pluggy respondeu e quando os dados dele foram atualizados)
+    sql: `
+ALTER TABLE bank_links ADD COLUMN item_updated_at TEXT;
+ALTER TABLE bank_links ADD COLUMN refresh_note TEXT;
+`,
+  },
 ];

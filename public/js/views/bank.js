@@ -28,6 +28,7 @@ export function bankSheet() {
           h('div', { class: 'row' }, iconBadge('bank', '#4cc9f0'), h('div', { class: 'grow' }, h('div', { style: { fontWeight: 600 } }, l.connector || 'Banco'),
             h('div', { class: 'small muted' }, l.last_sync_at ? 'Atualizado ' + timeAgo(l.last_sync_at) : 'Ainda não sincronizado'))),
           l.last_error ? h('div', { class: 'small neg' }, l.last_error) : null,
+          h('div', { class: 'small muted' }, 'Dados no Pluggy: ' + (l.item_updated_at ? 'atualizados ' + timeAgo(String(l.item_updated_at).replace('T', ' ').slice(0, 19)) : 'sem informação') + (l.refresh_note ? ' · último pedido: ' + l.refresh_note : '')),
           ...l.accounts.map((a) => h('div', { class: 'stack', style: { gap: '4px' } },
             h('div', { class: 'row' }, h('span', { class: 'grow' }, `${a.name} · ${KIND[a.kind]}`), a.bank_balance_cents != null && a.kind !== 'card' ? h('b', null, brl(a.bank_balance_cents)) : null),
             h('div', { class: 'small muted' }, 'Importando para: ' + (a.account_name || '—') + (a.account_name ? (a.account_scope === 'couple' ? ' (Casal)' : ' (Pessoal)') : '')),

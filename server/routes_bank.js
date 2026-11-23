@@ -19,7 +19,7 @@ async function ownedBankAccount(ctx, id) {
 
 get('/api/bank', async (req) => {
   const ctx = req.ctx;
-  const links = await q.all('SELECT id, connector, status, last_sync_at, last_error, created_at FROM bank_links WHERE user_id=? ORDER BY id', ctx.userId);
+  const links = await q.all('SELECT id, connector, status, last_sync_at, last_error, created_at, item_updated_at, refresh_note FROM bank_links WHERE user_id=? ORDER BY id', ctx.userId);
   const accs = await q.all(
     `SELECT ba.*, a.name AS account_name, a.scope AS account_scope FROM bank_accounts ba LEFT JOIN accounts a ON a.id=ba.account_id WHERE ba.user_id=? ORDER BY ba.id`, ctx.userId);
   const bal = await accountBalances(accs.map((a) => a.account_id).filter(Boolean));
@@ -116,7 +116,7 @@ post('/api/bank/links/:id/refresh', async (req) => {
   const l = await q.get('SELECT * FROM bank_links WHERE id=? AND user_id=?', Number(req.params.id), req.ctx.userId);
   if (!l) throw notFound();
   const r = await pluggy.refreshItem(l.item_id);
-  if (r.status) await q.run('UPDATE bank_links SET status=? WHERE id=?', String(r.status).slice(0, 40), l.id);
+  await q.run("UPDATE bank_links SET status=COALESCE(?, status), item_updated_at=COALESCE(?, item_updated_at), refresh_note=?, last_refresh_at=datetime('now') WHERE id=?", r.status ? String(r.status).slice(0, 40) : null, r.updated_at || null, (r.ok ? `ok ${r.status || ''}` : `recusado ${r.http || ''} ${r.message || ''}`).trim().slice(0, 200), l.id);
   return r;
 });
 

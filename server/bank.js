@@ -6,7 +6,7 @@ import * as pluggy from './pluggy.js';
 import { brl } from './calc.js';
 
 const BACKFILL_DAYS = () => Math.min(365, Math.max(7, Number(process.env.BANK_BACKFILL_DAYS) || 90));
-const OVERLAP_DAYS = 10;
+const OVERLAP_DAYS = 45; // relê um período grande: lançamentos que ficaram pendentes e foram efetivados depois entram sem duplicar
 
 async function categoryIndex(acc, userId) {
   const rows = acc?.scope === 'couple'
@@ -115,8 +115,11 @@ export async function syncBanks({ userId = null, itemId = null, budgetMs = 8000,
     if (ago(l.last_sync_at) < minAgeMs) continue;
     try {
       if (refresh && ago(l.last_refresh_at) > REFRESH_EVERY) {
-        await q.run("UPDATE bank_links SET last_refresh_at=datetime('now') WHERE id=?", l.id);
-        await pluggy.refreshItem(l.item_id, 0).catch(() => {});
+        await q.run("UPDATE bank_links SET last_refresh_at=datetime('now') WHERE id=?", l.id); // marca antes: evita dois pedidos ao mesmo tempo
+        const left = budgetMs - (Date.now() - started);
+        const rr = await pluggy.refreshItem(l.item_id, Math.max(0, Math.min(7000, left - 3000))).catch((e) => ({ ok: false, message: e.message }));
+        await q.run('UPDATE bank_links SET refresh_note=?, item_updated_at=COALESCE(?, item_updated_at), status=COALESCE(?, status) WHERE id=?',
+          (rr.ok ? `ok ${rr.status || ''}` : `recusado ${rr.http || ''} ${rr.message || ''}`).trim().slice(0, 200), rr.updated_at || null, rr.status ? String(rr.status).slice(0, 40) : null, l.id);
       }
       const accs = await q.all('SELECT * FROM bank_accounts WHERE link_id=? AND account_id IS NOT NULL', l.id);
       for (const ba of accs) {
