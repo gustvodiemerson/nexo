@@ -74,7 +74,7 @@ export async function listTransactions(accountId, from, to) {
   const out = [];
   let after = null, ok = true;
   for (let i = 0; i < 12; i++) {
-    const d = await api('/v2/transactions', { accountId, dateFrom: from, dateTo: to, after, pageSize: 500 }, { soft: true });
+    const d = await api('/v2/transactions', { accountId, dateFrom: from, dateTo: to, after }, { soft: true });
     if (d.failed) { ok = false; console.error('[pluggy] v2 falhou', d.failed.status, JSON.stringify(d.failed.data)?.slice(0, 200)); break; }
     out.push(...(d.results || []));
     const next = d.next ? String(d.next) : null;

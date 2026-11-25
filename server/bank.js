@@ -114,7 +114,8 @@ export async function syncBanks({ userId = null, itemId = null, budgetMs = 8000,
     if (Date.now() - started > budgetMs) break;
     if (ago(l.last_sync_at) < minAgeMs) continue;
     try {
-      if (refresh && ago(l.last_refresh_at) > REFRESH_EVERY) {
+      const noRefresh = /meupluggy/i.test(l.connector || '') || /cant be updated|can't be updated/i.test(l.refresh_note || ''); // MeuPluggy se atualiza sozinho; o Pluggy recusa pedidos manuais
+      if (refresh && ago(l.last_refresh_at) > (noRefresh ? 6 * 3600_000 : REFRESH_EVERY)) {
         await q.run("UPDATE bank_links SET last_refresh_at=datetime('now') WHERE id=?", l.id); // marca antes: evita dois pedidos ao mesmo tempo
         const left = budgetMs - (Date.now() - started);
         const rr = await pluggy.refreshItem(l.item_id, Math.max(0, Math.min(7000, left - 3000))).catch((e) => ({ ok: false, message: e.message }));
